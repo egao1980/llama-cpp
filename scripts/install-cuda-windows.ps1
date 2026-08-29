@@ -1,13 +1,12 @@
 # Install CUDA 12.4 toolkit pieces from NVIDIA redist zips (llama.cpp CI shape).
 # Used by publish-oci.yml on windows-2022. Local builds should use a full toolkit.
+# Expand each zip individually — pwsh expands *.zip and unzip then treats
+# extra names as members of the first archive.
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $Prefix = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4"
 New-Item -ItemType Directory -Force -Path $Prefix | Out-Null
-if (-not (Get-Command unzip -ErrorAction SilentlyContinue)) {
-    choco install unzip -y
-}
 
 $pkgs = @(
     "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.4.127-archive.zip",
@@ -20,26 +19,29 @@ $pkgs = @(
     "https://developer.download.nvidia.com/compute/cuda/redist/cuda_nvprof/windows-x86_64/cuda_nvprof-windows-x86_64-12.4.127-archive.zip",
     "https://developer.download.nvidia.com/compute/cuda/redist/cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-12.4.127-archive.zip"
 )
-Push-Location $Prefix
-try {
-    foreach ($url in $pkgs) {
-        $zip = Split-Path $url -Leaf
-        if (-not (Test-Path $zip)) {
-            Write-Host "==> download $zip"
-            curl.exe -fsSL -o $zip $url
-        }
+
+foreach ($url in $pkgs) {
+    $zip = Join-Path $Prefix (Split-Path $url -Leaf)
+    if (-not (Test-Path $zip)) {
+        Write-Host "==> download $(Split-Path $zip -Leaf)"
+        curl.exe -fsSL -o $zip $url
     }
-    unzip -o "*.zip" -d $Prefix
-    Get-ChildItem $Prefix -Directory -Filter "*-archive" | ForEach-Object {
-        Copy-Item -Path (Join-Path $_.FullName "*") -Destination $Prefix -Recurse -Force
-        Remove-Item $_.FullName -Recurse -Force
+    $len = (Get-Item $zip).Length
+    if ($len -lt 10000) {
+        throw "download too small ($len bytes): $zip"
     }
-} finally {
-    Pop-Location
+    Write-Host "==> expand $(Split-Path $zip -Leaf) ($len bytes)"
+    Expand-Archive -Path $zip -DestinationPath $Prefix -Force
+}
+
+Get-ChildItem $Prefix -Directory -Filter "*-archive" | ForEach-Object {
+    Copy-Item -Path (Join-Path $_.FullName "*") -Destination $Prefix -Recurse -Force
+    Remove-Item $_.FullName -Recurse -Force
 }
 
 $bin = Join-Path $Prefix "bin"
 if (-not (Test-Path (Join-Path $bin "nvcc.exe"))) {
+    Get-ChildItem $Prefix | Format-Table Name, Length
     throw "nvcc.exe missing after CUDA 12.4 redist install"
 }
 
