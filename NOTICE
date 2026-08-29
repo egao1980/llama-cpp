@@ -1,0 +1,12 @@
+llama-cpp (MIT) binds ggml-org/llama.cpp (MIT) via libllamastack.
+
+include/llama-stack.h is our ABI, implemented in native/llama-stack.c.
+Overlay libllama / libggml*: MIT.
+https://github.com/ggml-org/llama.cpp/blob/master/LICENSE
+
+Published linux/amd64 and windows/amd64 overlays also stage NVIDIA CUDA
+user-mode libraries (cudart / cublas / cublasLt). Those binaries are NVIDIA
+CUDA Toolkit redistributables, not MIT. The NVIDIA driver (libcuda / nvcuda)
+and Vulkan ICDs are never shipped.
+
+See include/PROVENANCE.md.

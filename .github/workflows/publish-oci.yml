@@ -1,0 +1,282 @@
+# linux/amd64 overlay IS CUDA+Vulkan (packager keys os-arch only).
+# windows/amd64 overlay IS CUDA+Vulkan. linux/arm64 = CPU. darwin/arm64 = Metal.
+# Compile needs no GPU. Runtime needs a driver (NVIDIA for CUDA, any Vulkan ICD).
+name: Publish OCI Package
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "OCI tag (empty → .asd :version)"
+        required: false
+        default: ""
+      registry:
+        description: "OCI registry"
+        required: false
+        default: "ghcr.io"
+      reuse_gpu_linux_run:
+        description: "Reuse native-linux-amd64 from this run id (skip GPU compile)"
+        required: false
+        default: ""
+      reuse_gpu_windows_run:
+        description: "Reuse native-windows-amd64 from this run id (skip GPU compile)"
+        required: false
+        default: ""
+
+env:
+  PACKAGE_VERSION_DEFAULT: "0.1.2"
+  LLAMA_CPP_REF: master
+  VULKAN_VERSION: "1.4.357.0"
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+jobs:
+  build-gpu-linux-amd64:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.reuse_gpu_linux_run == '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    container:
+      image: nvidia/cuda:12.8.1-devel-ubuntu24.04
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build deps
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            build-essential cmake git ninja-build patchelf ca-certificates curl \
+            glslc libvulkan-dev spirv-headers
+      - name: Build libllamastack (CUDA+Vulkan)
+        env:
+          LLAMA_CPP_FLAVOR: gpu
+          LLAMA_CPP_CUDA_ARCHITECTURES: "80;86;89;90a"
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          chmod +x scripts/build-llama.sh scripts/stage-cuda-runtime.sh
+          ./scripts/build-llama.sh
+          mkdir -p native-bundle
+          cp -a lib/linux-amd64/. native-bundle/
+          test -e native-bundle/libllamastack.so
+          test -e native-bundle/libggml-cuda.so
+          test -e native-bundle/libggml-vulkan.so
+          test -e native-bundle/libcudart.so.12
+          test -e native-bundle/libcublasLt.so.12
+          test -e native-bundle/libcublas.so.12
+          if ls native-bundle/libcuda.so* >/dev/null 2>&1; then
+            echo "refusing to publish libcuda (driver)" >&2
+            exit 1
+          fi
+          ls -la native-bundle
+      - uses: actions/upload-artifact@v6
+        with:
+          name: native-linux-amd64
+          path: native-bundle/
+
+  reuse-gpu-linux-amd64:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.reuse_gpu_linux_run != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: native-linux-amd64
+          run-id: ${{ inputs.reuse_gpu_linux_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          path: native-bundle
+      - name: Verify GPU overlay
+        run: |
+          test -e native-bundle/libllamastack.so
+          test -e native-bundle/libggml-cuda.so
+          test -e native-bundle/libggml-vulkan.so
+          test -e native-bundle/libcudart.so.12
+          if ls native-bundle/libcuda.so* >/dev/null 2>&1; then
+            echo "refusing to publish libcuda (driver)" >&2
+            exit 1
+          fi
+          ls -la native-bundle
+      - uses: actions/upload-artifact@v6
+        with:
+          name: native-linux-amd64
+          path: native-bundle/
+
+  build-cpu:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - os: darwin
+            arch: arm64
+            runner: macos-latest
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install build deps (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git curl ninja-build patchelf
+      - name: Install build deps (macOS)
+        if: matrix.os == 'darwin'
+        run: brew install cmake ninja || true
+      - name: Build libllamastack (CPU / Metal)
+        env:
+          LLAMA_CPP_FLAVOR: cpu
+        run: |
+          chmod +x scripts/build-llama.sh
+          ./scripts/build-llama.sh
+          mkdir -p native-bundle
+          src="lib/${{ matrix.os }}-${{ matrix.arch }}"
+          if [ ! -d "$src" ]; then
+            echo "missing $src" >&2
+            find lib -type d -print >&2 || true
+            exit 1
+          fi
+          cp -a "$src/." native-bundle/
+          if [ "${{ matrix.os }}" = "darwin" ]; then
+            test -e native-bundle/libllamastack.dylib
+            test -e native-bundle/libllama.dylib
+            test -e native-bundle/libggml-metal.dylib
+          else
+            test -e native-bundle/libllamastack.so
+            test -e native-bundle/libllama.so
+          fi
+          ls -la native-bundle
+      - uses: actions/upload-artifact@v6
+        with:
+          name: native-${{ matrix.os }}-${{ matrix.arch }}
+          path: native-bundle/
+
+  build-gpu-windows:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.reuse_gpu_windows_run == '' }}
+    runs-on: windows-2022
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install Vulkan SDK
+        shell: pwsh
+        run: |
+          curl.exe -o "$env:RUNNER_TEMP/VulkanSDK-Installer.exe" -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
+      - name: Install CUDA 12.4 redist
+        shell: pwsh
+        run: ./scripts/install-cuda-windows.ps1
+      - name: Build llamastack.dll (CUDA+Vulkan)
+        shell: pwsh
+        env:
+          LLAMA_CPP_FLAVOR: gpu
+          LLAMA_CPP_CUDA_ARCHITECTURES: "80;86;89;90a"
+        run: |
+          ./scripts/build-llama.ps1
+          New-Item -ItemType Directory -Force -Path native-bundle | Out-Null
+          Copy-Item -Path "lib\windows-amd64\*" -Destination native-bundle -Force
+          foreach ($n in @(
+              "llamastack.dll", "llama.dll", "ggml.dll",
+              "ggml-cuda.dll", "ggml-vulkan.dll",
+              "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"
+            )) {
+            if (-not (Test-Path "native-bundle\$n")) { throw "$n missing" }
+          }
+          if (Test-Path "native-bundle\nvcuda.dll") { throw "refusing to publish nvcuda.dll" }
+          Get-ChildItem native-bundle | Format-Table Name, Length
+      - uses: actions/upload-artifact@v6
+        with:
+          name: native-windows-amd64
+          path: native-bundle/
+
+  reuse-gpu-windows:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.reuse_gpu_windows_run != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: native-windows-amd64
+          run-id: ${{ inputs.reuse_gpu_windows_run }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repository: ${{ github.repository }}
+          path: native-bundle
+      - name: Verify GPU overlay
+        run: |
+          test -e native-bundle/llamastack.dll
+          test -e native-bundle/ggml-cuda.dll
+          test -e native-bundle/ggml-vulkan.dll
+          test -e native-bundle/cudart64_12.dll
+          if [ -e native-bundle/nvcuda.dll ]; then
+            echo "refusing to publish nvcuda.dll" >&2
+            exit 1
+          fi
+          ls -la native-bundle
+      - uses: actions/upload-artifact@v6
+        with:
+          name: native-windows-amd64
+          path: native-bundle/
+
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - id: ver
+        shell: bash
+        run: |
+          V="${{ inputs.version }}"
+          if [ -z "$V" ] && [[ "${GITHUB_REF_NAME}" == v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          fi
+          [ -z "$V" ] && V="${PACKAGE_VERSION_DEFAULT}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs:
+      - build-gpu-linux-amd64
+      - reuse-gpu-linux-amd64
+      - build-cpu
+      - build-gpu-windows
+      - reuse-gpu-windows
+      - resolve-version
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.build-cpu.result == 'success' &&
+      needs.resolve-version.result == 'success' &&
+      (needs.build-gpu-linux-amd64.result == 'success' || needs.reuse-gpu-linux-amd64.result == 'success') &&
+      (needs.build-gpu-windows.result == 'success' || needs.reuse-gpu-windows.result == 'success')
+    permissions:
+      contents: read
+      packages: write
+    uses: egao1980/cl-repository/.github/workflows/publish-native-package.yml@main
+    with:
+      package-name: llama-cpp
+      version: ${{ needs.resolve-version.outputs.version }}
+      registry: ${{ inputs.registry || 'ghcr.io' }}
+      packager-tag: "0.10.0"
+      sbcl-dynamic-space-mb: 12288
+      source-paths: |
+        llama-cpp.asd
+        src
+        include
+        native
+        LICENSE
+        NOTICE
+        README.md
+    secrets: inherit
