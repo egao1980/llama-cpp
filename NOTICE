@@ -1,0 +1,4 @@
+llama-cpp (MIT) binds ggml-org/llama.cpp (MIT) through include/llama-stack.h.
+
+The overlay ships libllamastack + libllama + libggml*. See include/PROVENANCE.md.
+Upstream: https://github.com/ggml-org/llama.cpp
