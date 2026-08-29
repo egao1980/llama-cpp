@@ -15,14 +15,27 @@ is_driver() {
 
 copy_user_mode() {
   local src="$1"
-  local name
+  local name real rbase
   name="$(basename "$src")"
   # ggml-cuda DT_NEEDED libcuda.so.1 (cuda_driver / VMM). Host provides it.
   if is_driver "$name"; then
     return 0
   fi
-  if [[ ! -f "$OUT/$name" ]]; then
-    cp -a "$src" "$OUT/$name"
+  # ldconfig gives SONAME symlinks (libcudart.so.12 -> libcudart.so.12.8.90).
+  # cp -a leaves a dangling link; packager and [[ -e ]] need a regular file.
+  real="$(readlink -f "$src" 2>/dev/null || true)"
+  if [[ -z "$real" || ! -f "$real" ]]; then
+    echo "cannot resolve CUDA library $src" >&2
+    exit 1
+  fi
+  rbase="$(basename "$real")"
+  if [[ ! -f "$OUT/$rbase" || -L "$OUT/$rbase" ]]; then
+    rm -f "$OUT/$rbase"
+    cp -L "$real" "$OUT/$rbase"
+  fi
+  if [[ "$name" != "$rbase" ]]; then
+    rm -f "$OUT/$name"
+    cp -L "$real" "$OUT/$name"
   fi
 }
 
@@ -95,8 +108,8 @@ done < <(
 )
 
 for required in libcudart.so.12 libcublas.so.12 libcublasLt.so.12; do
-  if [[ ! -e "$OUT/$required" ]]; then
-    echo "overlay missing required CUDA user-mode library $required" >&2
+  if [[ ! -f "$OUT/$required" || -L "$OUT/$required" ]]; then
+    echo "overlay missing required CUDA user-mode library $required (need a regular file)" >&2
     ls -la "$OUT" >&2
     exit 1
   fi
