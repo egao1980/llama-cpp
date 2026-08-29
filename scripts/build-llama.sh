@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Build ggml-org/llama.cpp shared libs + libllamastack into lib/<os>-<arch>/.
-# Published overlays: linux CPU, darwin Metal, windows CPU (build-llama.ps1).
-# Env: LLAMA_CPP_REF (default master), DEST_DIR, JOBS
-#      LLAMA_CPP_SKIP_CMAKE=1 — restage + relink shim only (reuse $BUILD)
+# Published linux/amd64 overlay is CUDA+Vulkan (flavor=gpu). CPU/cuda/vulkan-only
+# on that pair are local: lib/linux-amd64-<flavor>/. linux/arm64 = CPU.
+# darwin = Metal. Windows → build-llama.ps1 (published = CUDA+Vulkan).
+# Env: LLAMA_CPP_REF, LLAMA_CPP_FLAVOR=cpu|cuda|vulkan|gpu,
+#      LLAMA_CPP_CUDA_ARCHITECTURES, DEST_DIR, JOBS, LLAMA_CPP_SKIP_CMAKE=1
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -30,9 +32,43 @@ case "$uname_m" in
   *) echo "unsupported arch: $uname_m" >&2; exit 1 ;;
 esac
 
-OUT="${DEST_DIR:-$ROOT/lib/${os}-${arch}}"
+if [[ -z "${LLAMA_CPP_FLAVOR:-}" ]]; then
+  if [[ "$os" == "linux" && "$arch" == "amd64" ]]; then
+    FLAVOR=gpu
+  else
+    FLAVOR=cpu
+  fi
+else
+  FLAVOR="$LLAMA_CPP_FLAVOR"
+fi
+case "$FLAVOR" in
+  cpu|cuda|vulkan|gpu) ;;
+  *) echo "LLAMA_CPP_FLAVOR must be cpu|cuda|vulkan|gpu (got: $FLAVOR)" >&2; exit 1 ;;
+esac
+
+want_cuda=0
+want_vulkan=0
+case "$FLAVOR" in
+  cuda|gpu) want_cuda=1 ;;
+esac
+case "$FLAVOR" in
+  vulkan|gpu) want_vulkan=1 ;;
+esac
+
+if ((want_cuda)) && [[ "$os" != "linux" ]]; then
+  echo "CUDA in this script is linux-only (got $os/$arch; Windows → build-llama.ps1)" >&2
+  exit 1
+fi
+
+# Published path is lib/<os>-<arch>/. Non-default flavors on linux/amd64 are local-only.
+if [[ "$os" == "linux" && "$arch" == "amd64" && "$FLAVOR" != "gpu" ]]; then
+  suffix="-$FLAVOR"
+else
+  suffix=""
+fi
+OUT="${DEST_DIR:-$ROOT/lib/${os}-${arch}${suffix}}"
 SRC="$ROOT/build/llama.cpp"
-BUILD="$ROOT/build/${os}-${arch}"
+BUILD="$ROOT/build/${os}-${arch}-${FLAVOR}"
 
 mkdir -p "$ROOT/build"
 if [[ "${LLAMA_CPP_SKIP_CMAKE:-}" != "1" ]]; then
@@ -47,19 +83,29 @@ if [[ "${LLAMA_CPP_SKIP_CMAKE:-}" != "1" ]]; then
            git -C "$SRC" checkout --force FETCH_HEAD; }
   fi
 
-  # Portable CPU kernels for OCI. Darwin keeps Metal; no CUDA/Vulkan in the overlay.
   cmake_args=(
     -DCMAKE_BUILD_TYPE=Release
     -DBUILD_SHARED_LIBS=ON
     -DGGML_NATIVE=OFF
-    -DGGML_CUDA=OFF
-    -DGGML_VULKAN=OFF
     -DGGML_HIP=OFF
     -DLLAMA_BUILD_TESTS=OFF
     -DLLAMA_BUILD_EXAMPLES=OFF
     -DLLAMA_BUILD_SERVER=OFF
     -DLLAMA_BUILD_TOOLS=OFF
   )
+  if ((want_cuda)); then
+    cmake_args+=(
+      -DGGML_CUDA=ON
+      -DCMAKE_CUDA_ARCHITECTURES="${LLAMA_CPP_CUDA_ARCHITECTURES:-80;86;89;90a}"
+    )
+  else
+    cmake_args+=(-DGGML_CUDA=OFF)
+  fi
+  if ((want_vulkan)); then
+    cmake_args+=(-DGGML_VULKAN=ON)
+  else
+    cmake_args+=(-DGGML_VULKAN=OFF)
+  fi
   if [[ "$os" == "darwin" ]]; then
     cmake_args+=(-DGGML_METAL=ON -DGGML_BLAS=ON)
   else
@@ -132,9 +178,10 @@ materialize_symlinks() {
   shopt -u nullglob
 }
 
-drop_patch_versions() {
+drop_ggml_patch_versions() {
+  # Drop libllama.0.3.0 / libggml*.0.22.0 only. Never libcudart.so.12.x.
   local f b
-  for f in "$OUT"/*; do
+  for f in "$OUT"/libllama* "$OUT"/libggml*; do
     [[ -e "$f" || -L "$f" ]] || continue
     b="$(basename "$f")"
     if [[ "$b" =~ \.[0-9]+\.[0-9]+\.[0-9]+\.dylib$ ]] \
@@ -145,7 +192,7 @@ drop_patch_versions() {
 }
 
 materialize_symlinks
-drop_patch_versions
+drop_ggml_patch_versions
 chmod a+rX "$OUT"/* 2>/dev/null || true
 
 if [[ "$os" == "linux" ]] && command -v patchelf >/dev/null; then
@@ -155,6 +202,25 @@ if [[ "$os" == "linux" ]] && command -v patchelf >/dev/null; then
   done
 fi
 
+if ((want_cuda)); then
+  chmod +x "$ROOT/scripts/stage-cuda-runtime.sh"
+  "$ROOT/scripts/stage-cuda-runtime.sh" "$OUT"
+  if [[ ! -e "$OUT/libggml-cuda.so" && ! -e "$OUT/libggml-cuda.so.0" ]]; then
+    echo "CUDA flavor missing libggml-cuda.so*" >&2
+    ls -la "$OUT" >&2
+    exit 1
+  fi
+fi
+
+if ((want_vulkan)); then
+  if [[ ! -e "$OUT/libggml-vulkan.so" && ! -e "$OUT/libggml-vulkan.so.0" \
+        && ! -e "$OUT/libggml-vulkan.dylib" ]]; then
+    echo "Vulkan flavor missing libggml-vulkan*" >&2
+    ls -la "$OUT" >&2
+    exit 1
+  fi
+fi
+
 test -e "$SHIM_OUT"
 ls -la "$OUT"
-echo "staged $OUT"
+echo "staged $OUT flavor=$FLAVOR"

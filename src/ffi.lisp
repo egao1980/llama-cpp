@@ -36,9 +36,15 @@
   #+(or arm64 aarch64) "arm64"
   #-(or x86-64 x64 arm64 aarch64) "unknown")
 
+(defun %flavor ()
+  (let ((v (uiop:getenv "LLAMA_CPP_FLAVOR")))
+    (when (and v (plusp (length v)))
+      (string-downcase v))))
+
 (defun %native-search-dirs ()
-  "Overlay native/, lib/<os>-<arch>/. No LD_LIBRARY_PATH / DYLD_LIBRARY_PATH."
-  (let ((dirs '()))
+  "Overlay native/, lib/<os>-<arch>[-flavor]/. No LD_LIBRARY_PATH / DYLD_LIBRARY_PATH."
+  (let ((dirs '())
+        (flavor (%flavor)))
     (dolist (var '("LLAMA_CPP_NATIVE"))
       (let ((v (uiop:getenv var)))
         (when (and v (plusp (length v)))
@@ -48,10 +54,11 @@
              (root (when sys (asdf:system-source-directory sys))))
         (when root
           (push (namestring (merge-pathnames "native/" root)) dirs)
-          (push (namestring (merge-pathnames
-                             (format nil "lib/~A-~A/" (%host-os) (%host-arch))
-                             root))
-                dirs))))
+          (let ((base (format nil "lib/~A-~A" (%host-os) (%host-arch))))
+            (when flavor
+              (push (namestring (merge-pathnames (format nil "~A-~A/" base flavor) root))
+                    dirs))
+            (push (namestring (merge-pathnames (format nil "~A/" base) root)) dirs)))))
     (nreverse dirs)))
 
 (defun %lib-candidates ()
@@ -60,12 +67,33 @@
   #+(and unix (not darwin)) '("libllamastack.so")
   #-(or windows darwin unix) '("libllamastack.so"))
 
+(defun %cuda-runtime-names (which)
+  (ecase which
+    (:cudart '("libcudart.so.12" "libcudart.so.13" "libcudart.so"
+               "cudart64_12.dll" "cudart64_13.dll"))
+    (:cublaslt '("libcublasLt.so.12" "libcublasLt.so.13" "libcublasLt.so"
+                 "cublasLt64_12.dll" "cublasLt64_13.dll"))
+    (:cublas '("libcublas.so.12" "libcublas.so.13" "libcublas.so"
+               "cublas64_12.dll" "cublas64_13.dll"))))
+
+(defun %preload-cuda-runtime (dir)
+  "Absolute-preload CUDA user-mode deps. Never libcuda / nvcuda (driver)."
+  (dolist (which '(:cudart :cublaslt :cublas))
+    (let ((abs (%find-named dir (%cuda-runtime-names which))))
+      (when abs
+        (handler-case (load-foreign-library abs)
+          (error (e)
+            (warn "llama-cpp: failed to preload ~a (~a)" abs e))))))
+  t)
+
 (defun %ggml-preload-names ()
   #+darwin '("libggml-base.dylib" "libggml-cpu.dylib" "libggml-metal.dylib"
              "libggml-blas.dylib" "libggml.dylib" "libllama.dylib")
-  #+(and unix (not darwin)) '("libggml-base.so" "libggml-cpu.so" "libggml-cuda.so"
+  #+(and unix (not darwin)) '("libggml-base.so" "libggml-cpu.so"
+                              "libggml-cuda.so" "libggml-vulkan.so"
                               "libggml.so" "libllama.so")
-  #+windows '("ggml-base.dll" "ggml-cpu.dll" "ggml-blas.dll" "ggml.dll" "llama.dll")
+  #+windows '("ggml-base.dll" "ggml-cpu.dll" "ggml-cuda.dll" "ggml-vulkan.dll"
+              "ggml.dll" "llama.dll")
   #-(or windows darwin unix) '())
 
 (defun %find-named (dir names)
@@ -75,6 +103,7 @@
         (return (namestring (truename p)))))))
 
 (defun %preload-deps (dir)
+  (%preload-cuda-runtime dir)
   (dolist (name (%ggml-preload-names))
     (let ((abs (%find-named dir (list name))))
       (when abs

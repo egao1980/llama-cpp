@@ -1,6 +1,8 @@
 # Build ggml-org/llama.cpp shared libs + llamastack.dll into lib/windows-amd64/.
-# Published windows/amd64 overlay is CPU (MSVC). CUDA is not a release target.
-# Env: LLAMA_CPP_REF (default master), DEST_DIR, JOBS
+# Published windows/amd64 overlay is CUDA+Vulkan (flavor=gpu). cpu/cuda/vulkan-only
+# are local: lib/windows-amd64-<flavor>/.
+# Env: LLAMA_CPP_REF, LLAMA_CPP_FLAVOR=cpu|cuda|vulkan|gpu,
+#      LLAMA_CPP_CUDA_ARCHITECTURES, DEST_DIR, JOBS
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
@@ -8,9 +10,21 @@ $Root = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $Ref = if ($env:LLAMA_CPP_REF) { $env:LLAMA_CPP_REF } else { "master" }
 $Jobs = if ($env:JOBS) { [int]$env:JOBS } else { [Environment]::ProcessorCount }
 $SrcUrl = "https://github.com/ggml-org/llama.cpp.git"
-$Out = if ($env:DEST_DIR) { $env:DEST_DIR } else { Join-Path $Root "lib\windows-amd64" }
+$Flavor = if ($env:LLAMA_CPP_FLAVOR) { $env:LLAMA_CPP_FLAVOR.ToLowerInvariant() } else { "gpu" }
+if ($Flavor -notin @("cpu", "cuda", "vulkan", "gpu")) {
+    throw "LLAMA_CPP_FLAVOR must be cpu|cuda|vulkan|gpu (got: $Flavor)"
+}
+$WantCuda = $Flavor -in @("cuda", "gpu")
+$WantVulkan = $Flavor -in @("vulkan", "gpu")
+if ($env:DEST_DIR) {
+    $Out = $env:DEST_DIR
+} elseif ($Flavor -eq "gpu") {
+    $Out = Join-Path $Root "lib\windows-amd64"
+} else {
+    $Out = Join-Path $Root "lib\windows-amd64-$Flavor"
+}
 $Src = Join-Path $Root "build\llama.cpp"
-$Build = Join-Path $Root "build\windows-amd64"
+$Build = Join-Path $Root "build\windows-amd64-$Flavor"
 
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 if (Test-Path $vswhere) {
@@ -35,6 +49,15 @@ if (-not (Get-Command cmake -ErrorAction SilentlyContinue)) {
 if (-not (Get-Command cl -ErrorAction SilentlyContinue)) {
     throw "cl.exe not found (need VS Build Tools x64)"
 }
+if ($WantCuda -and -not (Get-Command nvcc -ErrorAction SilentlyContinue)) {
+    throw "nvcc not found (CUDA flavor needs the CUDA toolkit on PATH / CUDA_PATH)"
+}
+if ($WantVulkan) {
+    $vk = $env:VULKAN_SDK
+    if (-not $vk -or -not (Test-Path $vk)) {
+        throw "VULKAN_SDK not set (Vulkan flavor needs the LunarG SDK)"
+    }
+}
 
 New-Item -ItemType Directory -Force -Path (Join-Path $Root "build") | Out-Null
 if (Test-Path (Join-Path $Src ".git")) {
@@ -55,7 +78,11 @@ if (Test-Path (Join-Path $Src ".git")) {
     }
 }
 
-Write-Host "==> cmake llama.cpp $Ref flavor=cpu (MSVC) -> $Out"
+$cudaOn = if ($WantCuda) { "ON" } else { "OFF" }
+$vulkanOn = if ($WantVulkan) { "ON" } else { "OFF" }
+$archs = if ($env:LLAMA_CPP_CUDA_ARCHITECTURES) { $env:LLAMA_CPP_CUDA_ARCHITECTURES } else { "80;86;89;90a" }
+
+Write-Host "==> cmake llama.cpp $Ref flavor=$Flavor -> $Out"
 $cmakeArgs = @(
     "-S", $Src,
     "-B", $Build,
@@ -64,9 +91,9 @@ $cmakeArgs = @(
     "-DCMAKE_BUILD_TYPE=Release",
     "-DBUILD_SHARED_LIBS=ON",
     "-DGGML_NATIVE=OFF",
-    "-DGGML_CUDA=OFF",
+    "-DGGML_CUDA=$cudaOn",
+    "-DGGML_VULKAN=$vulkanOn",
     "-DGGML_METAL=OFF",
-    "-DGGML_VULKAN=OFF",
     "-DGGML_HIP=OFF",
     "-DGGML_BLAS=OFF",
     "-DLLAMA_BUILD_TESTS=OFF",
@@ -74,6 +101,9 @@ $cmakeArgs = @(
     "-DLLAMA_BUILD_SERVER=OFF",
     "-DLLAMA_BUILD_TOOLS=OFF"
 )
+if ($WantCuda) {
+    $cmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$archs"
+}
 & cmake @cmakeArgs
 if ($LASTEXITCODE -ne 0) { throw "cmake configure failed: $LASTEXITCODE" }
 
@@ -83,7 +113,9 @@ if ($LASTEXITCODE -ne 0) { throw "cmake build failed: $LASTEXITCODE" }
 if (Test-Path $Out) { Remove-Item -Recurse -Force $Out }
 New-Item -ItemType Directory -Force -Path $Out | Out-Null
 
-$want = @("llama.dll", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll")
+$want = [System.Collections.Generic.List[string]]@("llama.dll", "ggml.dll", "ggml-base.dll", "ggml-cpu.dll")
+if ($WantCuda) { [void]$want.Add("ggml-cuda.dll") }
+if ($WantVulkan) { [void]$want.Add("ggml-vulkan.dll") }
 $dlls = Get-ChildItem -Path $Build -Recurse -File |
     Where-Object {
         $_.Name -in $want -and
@@ -92,6 +124,11 @@ $dlls = Get-ChildItem -Path $Build -Recurse -File |
 if (-not ($dlls | Where-Object { $_.Name -eq "llama.dll" })) {
     Get-ChildItem -Path $Build -Recurse -File -Filter "*llama*" | Select-Object -First 40 FullName
     throw "llama.dll not found under $Build"
+}
+foreach ($need in $want) {
+    if (-not ($dlls | Where-Object { $_.Name -eq $need })) {
+        throw "$need not found under $Build"
+    }
 }
 foreach ($dll in $dlls) {
     Copy-Item $dll.FullName (Join-Path $Out $dll.Name) -Force
@@ -128,6 +165,10 @@ if (-not (Test-Path $shimDll)) { throw "llamastack.dll missing" }
 if (-not (Test-Path (Join-Path $Out "llama.dll"))) { throw "llama.dll missing" }
 if (-not (Test-Path (Join-Path $Out "ggml.dll"))) { throw "ggml.dll missing" }
 
-Write-Host "==> staged:"
+if ($WantCuda) {
+    & (Join-Path $PSScriptRoot "stage-cuda-runtime.ps1") -OutDir $Out
+}
+
+Write-Host "==> staged flavor=$Flavor :"
 Get-ChildItem $Out | Format-Table Name, Length
 Write-Host "staged $Out"

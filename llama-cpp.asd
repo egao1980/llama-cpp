@@ -1,6 +1,6 @@
 (defsystem "llama-cpp"
-  :version "0.1.1"
-  :description "CFFI + native overlays for ggml-org/llama.cpp (libllamastack)"
+  :version "0.1.2"
+  :description "CFFI + native overlays for ggml-org/llama.cpp (linux/amd64 and windows/amd64 are CUDA+Vulkan)"
   :author "egao1980"
   :license "MIT"
   :depends-on ("cffi" "trivial-garbage")
@@ -27,7 +27,14 @@
                         ("lib/linux-amd64/libggml-base.so" . "libggml-base.so")
                         ("lib/linux-amd64/libggml-base.so.0" . "libggml-base.so.0")
                         ("lib/linux-amd64/libggml-cpu.so" . "libggml-cpu.so")
-                        ("lib/linux-amd64/libggml-cpu.so.0" . "libggml-cpu.so.0")))))
+                        ("lib/linux-amd64/libggml-cpu.so.0" . "libggml-cpu.so.0")
+                        ("lib/linux-amd64/libggml-cuda.so" . "libggml-cuda.so")
+                        ("lib/linux-amd64/libggml-cuda.so.0" . "libggml-cuda.so.0")
+                        ("lib/linux-amd64/libggml-vulkan.so" . "libggml-vulkan.so")
+                        ("lib/linux-amd64/libggml-vulkan.so.0" . "libggml-vulkan.so.0")
+                        ("lib/linux-amd64/libcudart.so.12" . "libcudart.so.12")
+                        ("lib/linux-amd64/libcublas.so.12" . "libcublas.so.12")
+                        ("lib/linux-amd64/libcublasLt.so.12" . "libcublasLt.so.12")))))
      (:platform (:os "linux" :arch "arm64")
       :layers ((:role "native-library"
                 :files (("lib/linux-arm64/libllamastack.so" . "libllamastack.so")
@@ -61,7 +68,12 @@
                         ("lib/windows-amd64/llama.dll" . "llama.dll")
                         ("lib/windows-amd64/ggml.dll" . "ggml.dll")
                         ("lib/windows-amd64/ggml-base.dll" . "ggml-base.dll")
-                        ("lib/windows-amd64/ggml-cpu.dll" . "ggml-cpu.dll")))))))))
+                        ("lib/windows-amd64/ggml-cpu.dll" . "ggml-cpu.dll")
+                        ("lib/windows-amd64/ggml-cuda.dll" . "ggml-cuda.dll")
+                        ("lib/windows-amd64/ggml-vulkan.dll" . "ggml-vulkan.dll")
+                        ("lib/windows-amd64/cudart64_12.dll" . "cudart64_12.dll")
+                        ("lib/windows-amd64/cublas64_12.dll" . "cublas64_12.dll")
+                        ("lib/windows-amd64/cublasLt64_12.dll" . "cublasLt64_12.dll")))))))))
 
 (defsystem "llama-cpp/tests"
   :depends-on ("llama-cpp" "rove")
