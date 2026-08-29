@@ -22,6 +22,13 @@
            :status status
            :message (format nil "~a: ~a" op (or (%last-error) status)))))
 
+(defmacro %with-foreign-floats (&body body)
+  "ggml/Metal + L2 produce denormals/inexacts; SBCL traps those as conditions."
+  `(#+sbcl sb-int:with-float-traps-masked
+    #+sbcl (:underflow :overflow :inexact :invalid :divide-by-zero)
+    #-sbcl progn
+    ,@body))
+
 (defclass llama-engine ()
   ((pointer :initarg :pointer :accessor engine-pointer)
    (model-path :initarg :model-path :accessor engine-model-path)
@@ -34,7 +41,7 @@
   (when (and engine (not (engine-freed-p engine)))
     (let ((p (engine-pointer engine)))
       (when (and p (not (null-pointer-p p)))
-        (%free p)))
+        (%with-foreign-floats (%free p))))
     (setf (engine-pointer engine) (null-pointer)
           (engine-freed-p engine) t))
   engine)
@@ -60,7 +67,8 @@
             (or n-threads 0))
       (with-foreign-object (out :pointer)
         (setf (mem-ref out :pointer) (null-pointer))
-        (%check (%load path params out) "llama_stack_load")
+        (%with-foreign-floats
+          (%check (%load path params out) "llama_stack_load"))
         (let* ((ptr (mem-ref out :pointer))
                (engine (make-instance 'llama-engine
                                       :pointer ptr
@@ -98,23 +106,24 @@
                      for p = (foreign-string-alloc s)
                      do (push p owned)
                         (setf (mem-aref arr :pointer i) p))
-               (%check (%embed (engine-pointer e) arr n out) "llama_stack_embed")
-               (let* ((vals (foreign-slot-value out '(:struct llama-stack-embedding-result)
-                                                'values))
-                      (n-emb (foreign-slot-value out '(:struct llama-stack-embedding-result)
-                                                 'n-embeddings))
-                      (dim (foreign-slot-value out '(:struct llama-stack-embedding-result)
-                                               'dim))
-                      (tokens (foreign-slot-value out '(:struct llama-stack-embedding-result)
-                                                  'prompt-tokens))
-                      (vecs (loop for i from 0 below n-emb
-                                  collect
-                                  (let ((v (make-array dim :element-type 'single-float)))
-                                    (dotimes (j dim)
-                                      (setf (aref v j)
-                                            (mem-aref vals :float (+ (* i dim) j))))
-                                    v))))
-                 (values vecs dim tokens)))
+               (%with-foreign-floats
+                 (%check (%embed (engine-pointer e) arr n out) "llama_stack_embed")
+                 (let* ((vals (foreign-slot-value out '(:struct llama-stack-embedding-result)
+                                                  'values))
+                        (n-emb (foreign-slot-value out '(:struct llama-stack-embedding-result)
+                                                   'n-embeddings))
+                        (dim (foreign-slot-value out '(:struct llama-stack-embedding-result)
+                                                 'dim))
+                        (tokens (foreign-slot-value out '(:struct llama-stack-embedding-result)
+                                                    'prompt-tokens))
+                        (vecs (loop for i from 0 below n-emb
+                                    collect
+                                    (let ((v (make-array dim :element-type 'single-float)))
+                                      (dotimes (j dim)
+                                        (setf (aref v j)
+                                              (mem-aref vals :float (+ (* i dim) j))))
+                                      v))))
+                   (values vecs dim tokens))))
           (dolist (p owned)
             (foreign-string-free p))
           (unless (null-pointer-p
@@ -132,9 +141,10 @@
       (setf (mem-ref out :pointer) (null-pointer)
             (mem-ref pt :int32) 0
             (mem-ref ct :int32) 0)
-      (%check (%complete (engine-pointer e) prompt max-tokens
-                         (float temperature 1f0) out pt ct)
-              "llama_stack_complete")
+      (%with-foreign-floats
+        (%check (%complete (engine-pointer e) prompt max-tokens
+                           (float temperature 1f0) out pt ct)
+                "llama_stack_complete"))
       (let ((ptr (mem-ref out :pointer)))
         (unwind-protect
              (values (if (or (null ptr) (null-pointer-p ptr))
