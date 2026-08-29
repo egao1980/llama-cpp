@@ -6,21 +6,21 @@ set -euo pipefail
 OUT="${1:?usage: stage-cuda-runtime.sh <overlay-dir>}"
 test -d "$OUT"
 
-refuse_driver() {
-  local name="$1"
-  case "$name" in
-    libcuda.so|libcuda.so.*)
-      echo "refusing to ship NVIDIA driver library $name" >&2
-      exit 1
-      ;;
+is_driver() {
+  case "$1" in
+    libcuda.so|libcuda.so.*) return 0 ;;
   esac
+  return 1
 }
 
 copy_user_mode() {
   local src="$1"
   local name
   name="$(basename "$src")"
-  refuse_driver "$name"
+  # ggml-cuda DT_NEEDED libcuda.so.1 (cuda_driver / VMM). Host provides it.
+  if is_driver "$name"; then
+    return 0
+  fi
   if [[ ! -f "$OUT/$name" ]]; then
     cp -a "$src" "$OUT/$name"
   fi
@@ -52,7 +52,7 @@ collect_needed() {
 
 while read -r needed; do
   [[ -n "$needed" ]] || continue
-  refuse_driver "$needed"
+  is_driver "$needed" && continue
   case "$needed" in
     libcudart.so.*|libcublas.so.*|libcublasLt.so.*)
       found="$(resolve_soname "$needed")"
@@ -77,7 +77,7 @@ done
 # Resolve transitive NEEDED of the staged CUDA libs themselves (same names).
 while read -r needed; do
   [[ -n "$needed" ]] || continue
-  refuse_driver "$needed"
+  is_driver "$needed" && continue
   case "$needed" in
     libcudart.so.*|libcublas.so.*|libcublasLt.so.*)
       if [[ ! -e "$OUT/$needed" ]]; then
