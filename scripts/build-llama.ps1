@@ -141,10 +141,18 @@ foreach ($need in $want) {
 }
 foreach ($dll in $dlls) {
     Copy-Item $dll.FullName (Join-Path $Out $dll.Name) -Force
-    $lib = [IO.Path]::ChangeExtension($dll.FullName, ".lib")
-    if (Test-Path $lib) {
-        Copy-Item $lib (Join-Path $Out (Split-Path $lib -Leaf)) -Force
-    }
+}
+# Ninja puts llama.lib under src/, not next to bin/llama.dll (VS did).
+$libNames = @($want | ForEach-Object { [IO.Path]::ChangeExtension($_, ".lib") })
+Get-ChildItem -Path $Build -Recurse -File |
+    Where-Object {
+        $_.Name -in $libNames -and
+        $_.FullName -notmatch '[\\/](?:_deps|third_party|CMakeFiles)[\\/]'
+    } |
+    ForEach-Object { Copy-Item $_.FullName (Join-Path $Out $_.Name) -Force }
+if (-not (Test-Path (Join-Path $Out "llama.lib"))) {
+    Get-ChildItem -Path $Build -Recurse -File -Filter "*.lib" | Select-Object -First 40 FullName
+    throw "llama.lib not found under $Build"
 }
 
 $includeLlama = Join-Path $Src "include"
