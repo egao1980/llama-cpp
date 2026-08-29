@@ -39,6 +39,24 @@ Get-ChildItem $Prefix -Directory -Filter "*-archive" | ForEach-Object {
     Remove-Item $_.FullName -Recurse -Force
 }
 
+# VS generator looks here; Ninja does not need it. Copy if present.
+$msbuild = Get-ChildItem $Prefix -Recurse -Directory -Filter "MSBuildExtensions" -ErrorAction SilentlyContinue |
+    Select-Object -First 1
+if ($msbuild) {
+    foreach ($vs in @(
+            "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise",
+            "${env:ProgramFiles}\Microsoft Visual Studio\2022\Professional",
+            "${env:ProgramFiles}\Microsoft Visual Studio\2022\Community",
+            "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools"
+        )) {
+        $dest = Join-Path $vs "MSBuild\Microsoft\VC\v170\BuildCustomizations"
+        if (Test-Path $dest) {
+            Write-Host "==> copy CUDA MSBuild extensions -> $dest"
+            Copy-Item (Join-Path $msbuild.FullName "*") $dest -Force
+        }
+    }
+}
+
 $bin = Join-Path $Prefix "bin"
 if (-not (Test-Path (Join-Path $bin "nvcc.exe"))) {
     Get-ChildItem $Prefix | Format-Table Name, Length

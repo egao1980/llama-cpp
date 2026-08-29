@@ -83,11 +83,10 @@ $vulkanOn = if ($WantVulkan) { "ON" } else { "OFF" }
 $archs = if ($env:LLAMA_CPP_CUDA_ARCHITECTURES) { $env:LLAMA_CPP_CUDA_ARCHITECTURES } else { "80;86;89;90a" }
 
 Write-Host "==> cmake llama.cpp $Ref flavor=$Flavor -> $Out"
+# VS generator needs the CUDA MSBuild toolset. Ninja talks to nvcc directly.
 $cmakeArgs = @(
     "-S", $Src,
     "-B", $Build,
-    "-G", "Visual Studio 17 2022",
-    "-A", "x64",
     "-DCMAKE_BUILD_TYPE=Release",
     "-DBUILD_SHARED_LIBS=ON",
     "-DGGML_NATIVE=OFF",
@@ -102,7 +101,17 @@ $cmakeArgs = @(
     "-DLLAMA_BUILD_TOOLS=OFF"
 )
 if ($WantCuda) {
-    $cmakeArgs += "-DCMAKE_CUDA_ARCHITECTURES=$archs"
+    if (-not (Get-Command ninja -ErrorAction SilentlyContinue)) {
+        throw "ninja not found (CUDA flavor uses Ninja, not the VS CUDA toolset)"
+    }
+    $nvcc = if ($env:CUDA_PATH) { Join-Path $env:CUDA_PATH "bin\nvcc.exe" } else { "nvcc.exe" }
+    $cmakeArgs += @(
+        "-G", "Ninja",
+        "-DCMAKE_CUDA_ARCHITECTURES=$archs",
+        "-DCMAKE_CUDA_COMPILER=$nvcc"
+    )
+} else {
+    $cmakeArgs += @("-G", "Visual Studio 17 2022", "-A", "x64")
 }
 & cmake @cmakeArgs
 if ($LASTEXITCODE -ne 0) { throw "cmake configure failed: $LASTEXITCODE" }
