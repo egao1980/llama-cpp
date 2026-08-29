@@ -2,13 +2,14 @@
 
 #include "llama.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define ERR_MAX 1024
 
-static char g_last_error[ERR_MAX];
+static char g_last_error[ERR_MAX] = "";
 static int g_backend_ready = 0;
 
 struct llama_stack_engine {
@@ -51,6 +52,8 @@ static struct llama_context *make_ctx(struct llama_model *model, int32_t n_ctx,
     if (n_ctx > 0) {
         cparams.n_ctx = (uint32_t)n_ctx;
         cparams.n_batch = (uint32_t)n_ctx;
+        /* Encoder / non-causal graphs require n_ubatch == n_batch. */
+        cparams.n_ubatch = (uint32_t)n_ctx;
     }
     if (n_threads > 0) {
         cparams.n_threads = n_threads;
@@ -197,6 +200,20 @@ static llama_stack_status embed_one(llama_stack_engine *engine, const char *text
         return LLAMA_STACK_RUNTIME;
     }
     memcpy(dest, emb, (size_t)dim * sizeof(float));
+    /* Match llama.cpp examples/embedding default: L2 (OpenAI / LM Studio). */
+    {
+        double ss = 0.0;
+        int32_t i;
+        for (i = 0; i < dim; i++) {
+            ss += (double)dest[i] * (double)dest[i];
+        }
+        if (ss > 0.0) {
+            float inv = (float)(1.0 / sqrt(ss));
+            for (i = 0; i < dim; i++) {
+                dest[i] *= inv;
+            }
+        }
+    }
     return LLAMA_STACK_OK;
 }
 
@@ -210,7 +227,10 @@ llama_stack_status llama_stack_embed(llama_stack_engine *engine,
     }
     memset(out, 0, sizeof(*out));
     llama_set_embeddings(engine->ctx, true);
-    int32_t dim = llama_model_n_embd(engine->model);
+    int32_t dim = llama_model_n_embd_out(engine->model);
+    if (dim <= 0) {
+        dim = llama_model_n_embd(engine->model);
+    }
     if (dim <= 0) {
         set_error("model n_embd is 0");
         return LLAMA_STACK_RUNTIME;
