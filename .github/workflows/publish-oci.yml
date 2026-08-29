@@ -1,0 +1,139 @@
+# Build libllamastack + libllama/libggml* and publish via cl-repository.
+# linux/amd64 + linux/arm64 = CPU. darwin/arm64 = Metal. windows/amd64 = CPU.
+name: Publish OCI Package
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "OCI tag (empty → .asd :version)"
+        required: false
+        default: ""
+      registry:
+        description: "OCI registry"
+        required: false
+        default: "ghcr.io"
+
+env:
+  PACKAGE_VERSION_DEFAULT: "0.1.1"
+  LLAMA_CPP_REF: master
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: linux
+            arch: amd64
+            runner: ubuntu-latest
+          - os: linux
+            arch: arm64
+            runner: ubuntu-24.04-arm
+          - os: darwin
+            arch: arm64
+            runner: macos-latest
+          - os: windows
+            arch: amd64
+            runner: windows-2022
+
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build deps (Linux)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git curl ninja-build patchelf
+
+      - name: Install build deps (macOS)
+        if: matrix.os == 'darwin'
+        run: brew install cmake ninja || true
+
+      - name: Build libllamastack (Unix)
+        if: matrix.os != 'windows'
+        run: |
+          chmod +x scripts/build-llama.sh
+          ./scripts/build-llama.sh
+          mkdir -p native-bundle
+          src="lib/${{ matrix.os }}-${{ matrix.arch }}"
+          if [ ! -d "$src" ]; then
+            echo "missing $src" >&2
+            find lib -type d -print >&2 || true
+            exit 1
+          fi
+          cp -a "$src/." native-bundle/
+          if [ "${{ matrix.os }}" = "darwin" ]; then
+            test -e native-bundle/libllamastack.dylib
+            test -e native-bundle/libllama.dylib
+            test -e native-bundle/libllama.0.dylib
+            test -e native-bundle/libggml.dylib
+            test -e native-bundle/libggml-metal.dylib
+            test -e native-bundle/libggml-blas.dylib
+          else
+            test -e native-bundle/libllamastack.so
+            test -e native-bundle/libllama.so
+            test -e native-bundle/libllama.so.0
+            test -e native-bundle/libggml.so
+          fi
+          ls -la native-bundle
+
+      - name: Build llamastack.dll (Windows / MSVC)
+        if: matrix.os == 'windows'
+        shell: pwsh
+        run: |
+          ./scripts/build-llama.ps1
+          New-Item -ItemType Directory -Force -Path native-bundle | Out-Null
+          Copy-Item -Path "lib\windows-amd64\*" -Destination native-bundle -Force
+          foreach ($n in @("llamastack.dll", "llama.dll", "ggml.dll")) {
+            if (-not (Test-Path "native-bundle\$n")) { throw "$n missing" }
+          }
+          Get-ChildItem native-bundle | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: native-${{ matrix.os }}-${{ matrix.arch }}
+          path: native-bundle/
+
+  resolve-version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+    steps:
+      - id: ver
+        shell: bash
+        run: |
+          V="${{ inputs.version }}"
+          if [ -z "$V" ] && [[ "${GITHUB_REF_NAME}" == v* ]]; then
+            V="${GITHUB_REF_NAME#v}"
+          fi
+          [ -z "$V" ] && V="${PACKAGE_VERSION_DEFAULT}"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+  publish:
+    needs: [build, resolve-version]
+    permissions:
+      contents: read
+      packages: write
+    uses: egao1980/cl-repository/.github/workflows/publish-native-package.yml@main
+    with:
+      package-name: llama-cpp
+      version: ${{ needs.resolve-version.outputs.version }}
+      registry: ${{ inputs.registry || 'ghcr.io' }}
+      packager-tag: "0.10.0"
+      source-paths: |
+        llama-cpp.asd
+        src
+        include
+        native
+        LICENSE
+        NOTICE
+        README.md
+    secrets: inherit

@@ -5,10 +5,12 @@ CFFI + native overlays for [`ggml-org/llama.cpp`](https://github.com/ggml-org/ll
 Lisp binds **`include/llama-stack.h`** (`libllamastack`), a small stable ABI. `llama.h` structs are not imported — they churn. Overlay also stages `libllama` + `libggml*`.
 
 ```
-scripts/build-llama.sh          # lib/<os>-<arch>/  (stages SONAME + unversioned dylibs)
+scripts/build-llama.sh          # lib/<os>-<arch>/  (Unix; Windows → build-llama.ps1)
 # LLAMA_CPP_SKIP_CMAKE=1        # restage + relink shim only
 # or: LLAMA_CPP_NATIVE=/path/with/libllamastack.dylib
 ```
+
+OCI: tag `v*` or `gh workflow run publish-oci.yml`. Overlays are linux/amd64+arm64 (CPU), darwin/arm64 (Metal), windows/amd64 (CPU). Packager takes the artifact dir; `.asd` `:cl-repo` overlays are the inventory.
 
 SBCL masks float traps around FFI — ggml/Metal inexact/denormals otherwise become `FLOATING-POINT-OVERFLOW`.
 

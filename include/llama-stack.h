@@ -10,6 +10,18 @@
 extern "C" {
 #endif
 
+#ifndef LLAMA_STACK_API
+#if defined(_WIN32)
+#ifdef LLAMA_STACK_BUILD
+#define LLAMA_STACK_API __declspec(dllexport)
+#else
+#define LLAMA_STACK_API __declspec(dllimport)
+#endif
+#else
+#define LLAMA_STACK_API __attribute__((visibility("default")))
+#endif
+#endif
+
 #define LLAMA_STACK_ABI_VERSION 1
 
 typedef enum llama_stack_status {
@@ -34,29 +46,29 @@ typedef struct llama_stack_embedding_result {
     int32_t prompt_tokens;
 } llama_stack_embedding_result;
 
-int32_t llama_stack_abi_version(void);
-const char *llama_stack_version(void);
-const char *llama_stack_last_error(void);
+LLAMA_STACK_API int32_t llama_stack_abi_version(void);
+LLAMA_STACK_API const char *llama_stack_version(void);
+LLAMA_STACK_API const char *llama_stack_last_error(void);
 
-llama_stack_status llama_stack_load(const char *model_path,
-                                    const llama_stack_load_params *params,
-                                    llama_stack_engine **out);
-void llama_stack_free(llama_stack_engine *engine);
+LLAMA_STACK_API llama_stack_status llama_stack_load(const char *model_path,
+                                                    const llama_stack_load_params *params,
+                                                    llama_stack_engine **out);
+LLAMA_STACK_API void llama_stack_free(llama_stack_engine *engine);
 
-llama_stack_status llama_stack_embed(llama_stack_engine *engine,
-                                     const char **texts,
-                                     int32_t n_texts,
-                                     llama_stack_embedding_result *out);
-void llama_stack_embedding_result_free(llama_stack_embedding_result *out);
+LLAMA_STACK_API llama_stack_status llama_stack_embed(llama_stack_engine *engine,
+                                                     const char **texts,
+                                                     int32_t n_texts,
+                                                     llama_stack_embedding_result *out);
+LLAMA_STACK_API void llama_stack_embedding_result_free(llama_stack_embedding_result *out);
 
-llama_stack_status llama_stack_complete(llama_stack_engine *engine,
-                                        const char *prompt,
-                                        int32_t max_tokens,
-                                        float temperature,
-                                        char **out_text,
-                                        int32_t *prompt_tokens,
-                                        int32_t *completion_tokens);
-void llama_stack_string_free(char *s);
+LLAMA_STACK_API llama_stack_status llama_stack_complete(llama_stack_engine *engine,
+                                                        const char *prompt,
+                                                        int32_t max_tokens,
+                                                        float temperature,
+                                                        char **out_text,
+                                                        int32_t *prompt_tokens,
+                                                        int32_t *completion_tokens);
+LLAMA_STACK_API void llama_stack_string_free(char *s);
 
 #ifdef __cplusplus
 }

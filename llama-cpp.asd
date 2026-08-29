@@ -1,5 +1,5 @@
 (defsystem "llama-cpp"
-  :version "0.1.0"
+  :version "0.1.1"
   :description "CFFI + native overlays for ggml-org/llama.cpp (libllamastack)"
   :author "egao1980"
   :license "MIT"
@@ -18,13 +18,50 @@
     :overlays
     ((:platform (:os "linux" :arch "amd64")
       :layers ((:role "native-library"
-                :files (("lib/linux-amd64/libllamastack.so" . "libllamastack.so")))))
+                :files (("lib/linux-amd64/libllamastack.so" . "libllamastack.so")
+                        ("lib/linux-amd64/libllamastack.so.0" . "libllamastack.so.0")
+                        ("lib/linux-amd64/libllama.so" . "libllama.so")
+                        ("lib/linux-amd64/libllama.so.0" . "libllama.so.0")
+                        ("lib/linux-amd64/libggml.so" . "libggml.so")
+                        ("lib/linux-amd64/libggml.so.0" . "libggml.so.0")
+                        ("lib/linux-amd64/libggml-base.so" . "libggml-base.so")
+                        ("lib/linux-amd64/libggml-base.so.0" . "libggml-base.so.0")
+                        ("lib/linux-amd64/libggml-cpu.so" . "libggml-cpu.so")
+                        ("lib/linux-amd64/libggml-cpu.so.0" . "libggml-cpu.so.0")))))
      (:platform (:os "linux" :arch "arm64")
       :layers ((:role "native-library"
-                :files (("lib/linux-arm64/libllamastack.so" . "libllamastack.so")))))
+                :files (("lib/linux-arm64/libllamastack.so" . "libllamastack.so")
+                        ("lib/linux-arm64/libllamastack.so.0" . "libllamastack.so.0")
+                        ("lib/linux-arm64/libllama.so" . "libllama.so")
+                        ("lib/linux-arm64/libllama.so.0" . "libllama.so.0")
+                        ("lib/linux-arm64/libggml.so" . "libggml.so")
+                        ("lib/linux-arm64/libggml.so.0" . "libggml.so.0")
+                        ("lib/linux-arm64/libggml-base.so" . "libggml-base.so")
+                        ("lib/linux-arm64/libggml-base.so.0" . "libggml-base.so.0")
+                        ("lib/linux-arm64/libggml-cpu.so" . "libggml-cpu.so")
+                        ("lib/linux-arm64/libggml-cpu.so.0" . "libggml-cpu.so.0")))))
      (:platform (:os "darwin" :arch "arm64")
       :layers ((:role "native-library"
-                :files (("lib/darwin-arm64/libllamastack.dylib" . "libllamastack.dylib")))))))))
+                :files (("lib/darwin-arm64/libllamastack.dylib" . "libllamastack.dylib")
+                        ("lib/darwin-arm64/libllama.dylib" . "libllama.dylib")
+                        ("lib/darwin-arm64/libllama.0.dylib" . "libllama.0.dylib")
+                        ("lib/darwin-arm64/libggml.dylib" . "libggml.dylib")
+                        ("lib/darwin-arm64/libggml.0.dylib" . "libggml.0.dylib")
+                        ("lib/darwin-arm64/libggml-base.dylib" . "libggml-base.dylib")
+                        ("lib/darwin-arm64/libggml-base.0.dylib" . "libggml-base.0.dylib")
+                        ("lib/darwin-arm64/libggml-cpu.dylib" . "libggml-cpu.dylib")
+                        ("lib/darwin-arm64/libggml-cpu.0.dylib" . "libggml-cpu.0.dylib")
+                        ("lib/darwin-arm64/libggml-metal.dylib" . "libggml-metal.dylib")
+                        ("lib/darwin-arm64/libggml-metal.0.dylib" . "libggml-metal.0.dylib")
+                        ("lib/darwin-arm64/libggml-blas.dylib" . "libggml-blas.dylib")
+                        ("lib/darwin-arm64/libggml-blas.0.dylib" . "libggml-blas.0.dylib")))))
+     (:platform (:os "windows" :arch "amd64")
+      :layers ((:role "native-library"
+                :files (("lib/windows-amd64/llamastack.dll" . "llamastack.dll")
+                        ("lib/windows-amd64/llama.dll" . "llama.dll")
+                        ("lib/windows-amd64/ggml.dll" . "ggml.dll")
+                        ("lib/windows-amd64/ggml-base.dll" . "ggml-base.dll")
+                        ("lib/windows-amd64/ggml-cpu.dll" . "ggml-cpu.dll")))))))))
 
 (defsystem "llama-cpp/tests"
   :depends-on ("llama-cpp" "rove")

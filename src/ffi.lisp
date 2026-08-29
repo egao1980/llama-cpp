@@ -65,7 +65,7 @@
              "libggml-blas.dylib" "libggml.dylib" "libllama.dylib")
   #+(and unix (not darwin)) '("libggml-base.so" "libggml-cpu.so" "libggml-cuda.so"
                               "libggml.so" "libllama.so")
-  #+windows '("ggml-base.dll" "ggml-cpu.dll" "ggml.dll" "llama.dll")
+  #+windows '("ggml-base.dll" "ggml-cpu.dll" "ggml-blas.dll" "ggml.dll" "llama.dll")
   #-(or windows darwin unix) '())
 
 (defun %find-named (dir names)
