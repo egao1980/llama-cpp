@@ -178,6 +178,9 @@ jobs:
       - name: Install CUDA 12.4 redist
         shell: pwsh
         run: ./scripts/install-cuda-windows.ps1
+      - name: Install Ninja
+        shell: pwsh
+        run: choco install ninja -y
       - name: Build llamastack.dll (CUDA+Vulkan)
         shell: pwsh
         env:
