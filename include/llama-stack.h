@@ -22,7 +22,7 @@ extern "C" {
 #endif
 #endif
 
-#define LLAMA_STACK_ABI_VERSION 2
+#define LLAMA_STACK_ABI_VERSION 3
 
 typedef enum llama_stack_status {
     LLAMA_STACK_OK = 0,
@@ -81,6 +81,18 @@ LLAMA_STACK_API llama_stack_status llama_stack_complete_ex(llama_stack_engine *e
                                                            char **out_text,
                                                            int32_t *prompt_tokens,
                                                            int32_t *completion_tokens);
+/* on_token: each detok delta. Return 0 = continue, non-zero = stop (still OK).
+ * NULL callback = same as complete_ex. */
+typedef int32_t (*llama_stack_token_cb)(const char *piece, void *user);
+LLAMA_STACK_API llama_stack_status llama_stack_complete_stream(
+    llama_stack_engine *engine,
+    const char *prompt,
+    const llama_stack_complete_params *params,
+    llama_stack_token_cb on_token,
+    void *user,
+    char **out_text,
+    int32_t *prompt_tokens,
+    int32_t *completion_tokens);
 LLAMA_STACK_API void llama_stack_string_free(char *s);
 
 #ifdef __cplusplus
