@@ -309,6 +309,20 @@ llama_stack_status llama_stack_complete(llama_stack_engine *engine,
                                         char **out_text,
                                         int32_t *prompt_tokens,
                                         int32_t *completion_tokens) {
+    llama_stack_complete_params params;
+    memset(&params, 0, sizeof(params));
+    params.max_tokens = max_tokens;
+    params.temperature = temperature;
+    return llama_stack_complete_ex(engine, prompt, &params, out_text,
+                                   prompt_tokens, completion_tokens);
+}
+
+llama_stack_status llama_stack_complete_ex(llama_stack_engine *engine,
+                                           const char *prompt,
+                                           const llama_stack_complete_params *params,
+                                           char **out_text,
+                                           int32_t *prompt_tokens,
+                                           int32_t *completion_tokens) {
     if (!engine || !engine->ctx || !prompt || !out_text) {
         set_error("complete requires engine, prompt, and out_text");
         return LLAMA_STACK_INVALID;
@@ -320,6 +334,17 @@ llama_stack_status llama_stack_complete(llama_stack_engine *engine,
     if (completion_tokens) {
         *completion_tokens = 0;
     }
+    llama_stack_complete_params defaults;
+    memset(&defaults, 0, sizeof(defaults));
+    defaults.max_tokens = 32;
+    if (!params) {
+        params = &defaults;
+    }
+    int32_t max_tokens = params->max_tokens > 0 ? params->max_tokens : 32;
+    float temperature = params->temperature;
+    const char *grammar = (params->grammar && params->grammar[0]) ? params->grammar : NULL;
+    const char *grammar_root = (params->grammar_root && params->grammar_root[0])
+        ? params->grammar_root : "root";
     llama_set_embeddings(engine->ctx, false);
     const struct llama_vocab *vocab = llama_model_get_vocab(engine->model);
     llama_token *prompt_toks = NULL;
@@ -337,9 +362,6 @@ llama_stack_status llama_stack_complete(llama_stack_engine *engine,
         free(prompt_toks);
         set_error("prompt longer than n_ctx");
         return LLAMA_STACK_INVALID;
-    }
-    if (max_tokens <= 0) {
-        max_tokens = 32;
     }
     llama_memory_clear(llama_get_memory(engine->ctx), true);
     struct llama_batch batch = llama_batch_init(engine->n_ctx, 0, 1);
@@ -359,6 +381,17 @@ llama_stack_status llama_stack_complete(llama_stack_engine *engine,
         return LLAMA_STACK_RUNTIME;
     }
     struct llama_sampler *smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    if (grammar) {
+        struct llama_sampler *grmr = llama_sampler_init_grammar(vocab, grammar, grammar_root);
+        if (!grmr) {
+            llama_sampler_free(smpl);
+            llama_batch_free(batch);
+            free(prompt_toks);
+            set_error("grammar parse failed");
+            return LLAMA_STACK_INVALID;
+        }
+        llama_sampler_chain_add(smpl, grmr);
+    }
     if (temperature <= 0.0f) {
         llama_sampler_chain_add(smpl, llama_sampler_init_greedy());
     } else {

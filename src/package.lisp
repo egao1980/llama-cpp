@@ -25,6 +25,7 @@
            #:ensure-engine
 
            #:complete
+           #:complete-ex-available-p
            #:embed))
 
 (in-package #:llama-cpp)

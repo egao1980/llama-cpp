@@ -8,6 +8,7 @@ against [`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp) `llama.h`.
 | Upstream | https://github.com/ggml-org/llama.cpp |
 | SPDX | MIT |
 | Pin | `LLAMA_CPP_REF` in `scripts/build-llama.sh` |
+| ABI 2 | `llama_stack_complete_ex` + `llama_stack_complete_params` (GBNF) |
 
 Do not CFFI-bind `llama.h` structs — they change. Bump `+llama-stack-abi-version+`
 together with this header.
