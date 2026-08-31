@@ -1,6 +1,6 @@
 (in-package #:llama-cpp)
 
-(defconstant +llama-stack-abi-version+ 3)
+(defconstant +llama-stack-abi-version+ 4)
 
 (defcenum llama-stack-status
   (:ok 0)
@@ -23,7 +23,8 @@
   (max-tokens :int32)
   (temperature :float)
   (grammar :pointer)
-  (grammar-root :pointer))
+  (grammar-root :pointer)
+  (parsed :pointer))
 
 (define-foreign-library libllamastack
   (:darwin (:or "libllamastack.dylib" "libllamastack.0.dylib"))
@@ -195,6 +196,13 @@
   (completion-tokens :pointer))
 (defcfun ("llama_stack_string_free" %string-free) :void
   (s :pointer))
+(defcfun ("llama_stack_grammar_parse" %grammar-parse) llama-stack-status
+  (engine :pointer)
+  (grammar :string)
+  (grammar-root :string)
+  (out :pointer))
+(defcfun ("llama_stack_grammar_free" %grammar-free) :void
+  (grammar :pointer))
 
 (defvar *on-token-fn* nil)
 (defvar *on-token-error* nil)
@@ -222,6 +230,12 @@
   "T when the loaded libllamastack exports llama_stack_complete_stream (ABI 3)."
   (and *llama-loaded*
        (let ((p (ignore-errors (foreign-symbol-pointer "llama_stack_complete_stream"))))
+         (and p (not (null-pointer-p p))))))
+
+(defun grammar-parse-available-p ()
+  "T when the loaded libllamastack exports llama_stack_grammar_parse (ABI 4)."
+  (and *llama-loaded*
+       (let ((p (ignore-errors (foreign-symbol-pointer "llama_stack_grammar_parse"))))
          (and p (not (null-pointer-p p))))))
 
 ;;; Soft auto-load: overlay consumers get the lib; CI without natives still loads.

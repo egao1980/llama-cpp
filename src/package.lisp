@@ -27,6 +27,11 @@
            #:complete
            #:complete-ex-available-p
            #:complete-stream-available-p
+           #:grammar-parse-available-p
+           #:llama-grammar
+           #:llama-grammar-p
+           #:parse-grammar
+           #:free-grammar
            #:embed))
 
 (in-package #:llama-cpp)

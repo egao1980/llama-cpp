@@ -1,5 +1,5 @@
 (defsystem "llama-cpp"
-  :version "0.1.4"
+  :version "0.1.5"
   :description "CFFI + native overlays for ggml-org/llama.cpp (linux/amd64 and windows/amd64 are CUDA+Vulkan)"
   :author "egao1980"
   :license "MIT"

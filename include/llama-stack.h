@@ -22,7 +22,7 @@ extern "C" {
 #endif
 #endif
 
-#define LLAMA_STACK_ABI_VERSION 3
+#define LLAMA_STACK_ABI_VERSION 4
 
 typedef enum llama_stack_status {
     LLAMA_STACK_OK = 0,
@@ -32,6 +32,7 @@ typedef enum llama_stack_status {
 } llama_stack_status;
 
 typedef struct llama_stack_engine llama_stack_engine;
+typedef struct llama_stack_grammar llama_stack_grammar;
 
 typedef struct llama_stack_load_params {
     int32_t n_ctx;
@@ -66,7 +67,17 @@ typedef struct llama_stack_complete_params {
     float temperature;
     const char *grammar;      /* GBNF; NULL / empty = unconstrained */
     const char *grammar_root; /* NULL / empty = "root" */
+    const llama_stack_grammar *parsed; /* ABI 4; wins over grammar string */
 } llama_stack_complete_params;
+
+/* Compile GBNF via llama_sampler_init_grammar. Engine must outlive the handle.
+ * complete clones the sampler so one parse can be reused. */
+LLAMA_STACK_API llama_stack_status llama_stack_grammar_parse(
+    llama_stack_engine *engine,
+    const char *grammar,
+    const char *grammar_root,
+    llama_stack_grammar **out);
+LLAMA_STACK_API void llama_stack_grammar_free(llama_stack_grammar *grammar);
 
 LLAMA_STACK_API llama_stack_status llama_stack_complete(llama_stack_engine *engine,
                                                         const char *prompt,

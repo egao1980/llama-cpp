@@ -10,6 +10,7 @@ against [`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp) `llama.h`.
 | Pin | `LLAMA_CPP_REF` in `scripts/build-llama.sh` |
 | ABI 2 | `llama_stack_complete_ex` + `llama_stack_complete_params` (GBNF) |
 | ABI 3 | `llama_stack_complete_stream` (token callback; same params / grammar) |
+| ABI 4 | `llama_stack_grammar_parse` / `_free` + `complete_params.parsed` |
 
 Do not CFFI-bind `llama.h` structs — they change. Bump `+llama-stack-abi-version+`
 together with this header.
