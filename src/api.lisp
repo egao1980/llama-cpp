@@ -130,7 +130,45 @@
                    (foreign-slot-value out '(:struct llama-stack-embedding-result) 'values))
             (%embedding-result-free out)))))))
 
-(defun %with-complete-params (max-tokens temperature grammar grammar-root fn)
+(defclass llama-grammar ()
+  ((pointer :initarg :pointer :accessor grammar-pointer)
+   (freed :initform nil :accessor grammar-freed-p)))
+
+(defun llama-grammar-p (x)
+  (typep x 'llama-grammar))
+
+(defun free-grammar (grammar)
+  (when (and grammar (not (grammar-freed-p grammar)))
+    (let ((p (grammar-pointer grammar)))
+      (when (and p (not (null-pointer-p p)))
+        (%with-foreign-floats (%grammar-free p))))
+    (setf (grammar-pointer grammar) (null-pointer)
+          (grammar-freed-p grammar) t))
+  grammar)
+
+(defun %finalize-grammar (grammar)
+  (ignore-errors (free-grammar grammar)))
+
+(defun parse-grammar (engine grammar &key (root "root"))
+  "Compile GBNF via llama_sampler_init_grammar. ENGINE must outlive the handle.
+   → llama-grammar. Reuse with COMPLETE :parsed."
+  (let ((e (ensure-engine engine)))
+    (unless (and grammar (plusp (length grammar)))
+      (error 'llama-error :message "parse-grammar requires GBNF"))
+    (unless (grammar-parse-available-p)
+      (error 'llama-error
+             :message "parse-grammar requires libllamastack ABI 4 (rebuild native)"))
+    (with-foreign-object (out :pointer)
+      (setf (mem-ref out :pointer) (null-pointer))
+      (%with-foreign-floats
+        (%check (%grammar-parse (engine-pointer e) grammar (or root "root") out)
+                "llama_stack_grammar_parse"))
+      (let* ((ptr (mem-ref out :pointer))
+             (g (make-instance 'llama-grammar :pointer ptr)))
+        (tg:finalize g (lambda () (%finalize-grammar g)))
+        g))))
+
+(defun %with-complete-params (max-tokens temperature grammar grammar-root parsed fn)
   (with-foreign-object (params '(:struct llama-stack-complete-params))
     (dotimes (i (foreign-type-size '(:struct llama-stack-complete-params)))
       (setf (mem-aref params :uint8 i) 0))
@@ -140,6 +178,10 @@
           (foreign-slot-value params '(:struct llama-stack-complete-params)
                               'temperature)
           (float temperature 1f0))
+    (when (and parsed (llama-grammar-p parsed) (not (grammar-freed-p parsed)))
+      (setf (foreign-slot-value params '(:struct llama-stack-complete-params)
+                                'parsed)
+            (grammar-pointer parsed)))
     (let ((g-ptr (and grammar (foreign-string-alloc grammar)))
           (r-ptr (and grammar-root (foreign-string-alloc grammar-root))))
       (unwind-protect
@@ -158,18 +200,25 @@
         (when r-ptr (foreign-string-free r-ptr))))))
 
 (defun complete (engine prompt &key (max-tokens 32) (temperature 0.0)
-                  grammar grammar-root on-token)
+                  grammar grammar-root parsed on-token)
   "Blocking completion. GRAMMAR is GBNF (GRAMMAR-ROOT defaults to \"root\").
+   PARSED is a llama-grammar from PARSE-GRAMMAR (wins over GRAMMAR).
    ON-TOKEN is (lambda (piece)) per detok delta; non-NIL return stops.
    → (values text prompt-tokens completion-tokens)."
   (let ((e (ensure-engine engine))
         (g (and grammar (plusp (length grammar)) grammar))
-        (root (and grammar-root (plusp (length grammar-root)) grammar-root)))
+        (root (and grammar-root (plusp (length grammar-root)) grammar-root))
+        (pg (and parsed (llama-grammar-p parsed) parsed)))
     (unless (and prompt (plusp (length prompt)))
       (error 'llama-error :message "complete requires a prompt"))
+    (when (and pg (grammar-freed-p pg))
+      (error 'llama-error :message "parsed grammar has been freed"))
     (when (and g (not (complete-ex-available-p)))
       (error 'llama-error
              :message "grammar requires libllamastack ABI 2 (rebuild native)"))
+    (when (and pg (not (grammar-parse-available-p)))
+      (error 'llama-error
+             :message "parsed grammar requires libllamastack ABI 4 (rebuild native)"))
     (when (and on-token (not (complete-stream-available-p)))
       (error 'llama-error
              :message "streaming requires libllamastack ABI 3 (rebuild native)"))
@@ -184,7 +233,7 @@
           (on-token
            (let ((*on-token-fn* on-token)
                  (*on-token-error* nil))
-             (%with-complete-params max-tokens temperature g root
+             (%with-complete-params max-tokens temperature g root pg
                (lambda (params)
                  (%check (%complete-stream (engine-pointer e) prompt params
                                            (callback %token-cb) (null-pointer)
@@ -192,8 +241,8 @@
                          "llama_stack_complete_stream")))
              (when *on-token-error*
                (error *on-token-error*))))
-          ((or g (complete-ex-available-p))
-           (%with-complete-params max-tokens temperature g root
+          ((or g pg (complete-ex-available-p))
+           (%with-complete-params max-tokens temperature g root pg
              (lambda (params)
                (%check (%complete-ex (engine-pointer e) prompt params out pt ct)
                        "llama_stack_complete_ex"))))

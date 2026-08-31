@@ -19,6 +19,10 @@ struct llama_stack_engine {
     int32_t n_ctx;
 };
 
+struct llama_stack_grammar {
+    struct llama_sampler *smpl;
+};
+
 static void set_error(const char *msg) {
     snprintf(g_last_error, ERR_MAX, "%s", msg ? msg : "unknown error");
 }
@@ -358,6 +362,7 @@ llama_stack_status llama_stack_complete_stream(llama_stack_engine *engine,
     const char *grammar = (params->grammar && params->grammar[0]) ? params->grammar : NULL;
     const char *grammar_root = (params->grammar_root && params->grammar_root[0])
         ? params->grammar_root : "root";
+    const llama_stack_grammar *parsed = params->parsed;
     llama_set_embeddings(engine->ctx, false);
     const struct llama_vocab *vocab = llama_model_get_vocab(engine->model);
     llama_token *prompt_toks = NULL;
@@ -394,7 +399,17 @@ llama_stack_status llama_stack_complete_stream(llama_stack_engine *engine,
         return LLAMA_STACK_RUNTIME;
     }
     struct llama_sampler *smpl = llama_sampler_chain_init(llama_sampler_chain_default_params());
-    if (grammar) {
+    if (parsed && parsed->smpl) {
+        struct llama_sampler *grmr = llama_sampler_clone(parsed->smpl);
+        if (!grmr) {
+            llama_sampler_free(smpl);
+            llama_batch_free(batch);
+            free(prompt_toks);
+            set_error("grammar clone failed");
+            return LLAMA_STACK_RUNTIME;
+        }
+        llama_sampler_chain_add(smpl, grmr);
+    } else if (grammar) {
         struct llama_sampler *grmr = llama_sampler_init_grammar(vocab, grammar, grammar_root);
         if (!grmr) {
             llama_sampler_free(smpl);
@@ -482,4 +497,41 @@ llama_stack_status llama_stack_complete_stream(llama_stack_engine *engine,
 
 void llama_stack_string_free(char *s) {
     free(s);
+}
+
+llama_stack_status llama_stack_grammar_parse(llama_stack_engine *engine,
+                                             const char *grammar,
+                                             const char *grammar_root,
+                                             llama_stack_grammar **out) {
+    if (!engine || !engine->model || !grammar || !grammar[0] || !out) {
+        set_error("grammar parse requires engine, grammar, and out");
+        return LLAMA_STACK_INVALID;
+    }
+    *out = NULL;
+    const char *root = (grammar_root && grammar_root[0]) ? grammar_root : "root";
+    const struct llama_vocab *vocab = llama_model_get_vocab(engine->model);
+    struct llama_sampler *smpl = llama_sampler_init_grammar(vocab, grammar, root);
+    if (!smpl) {
+        set_error("grammar parse failed");
+        return LLAMA_STACK_INVALID;
+    }
+    llama_stack_grammar *g = (llama_stack_grammar *)calloc(1, sizeof(*g));
+    if (!g) {
+        llama_sampler_free(smpl);
+        set_error("out of memory");
+        return LLAMA_STACK_RUNTIME;
+    }
+    g->smpl = smpl;
+    *out = g;
+    return LLAMA_STACK_OK;
+}
+
+void llama_stack_grammar_free(llama_stack_grammar *grammar) {
+    if (!grammar) {
+        return;
+    }
+    if (grammar->smpl) {
+        llama_sampler_free(grammar->smpl);
+    }
+    free(grammar);
 }
