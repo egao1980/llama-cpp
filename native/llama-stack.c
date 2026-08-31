@@ -3,6 +3,7 @@
 #include "llama.h"
 
 #include <math.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -323,6 +324,18 @@ llama_stack_status llama_stack_complete_ex(llama_stack_engine *engine,
                                            char **out_text,
                                            int32_t *prompt_tokens,
                                            int32_t *completion_tokens) {
+    return llama_stack_complete_stream(engine, prompt, params, NULL, NULL,
+                                       out_text, prompt_tokens, completion_tokens);
+}
+
+llama_stack_status llama_stack_complete_stream(llama_stack_engine *engine,
+                                               const char *prompt,
+                                               const llama_stack_complete_params *params,
+                                               llama_stack_token_cb on_token,
+                                               void *user,
+                                               char **out_text,
+                                               int32_t *prompt_tokens,
+                                               int32_t *completion_tokens) {
     if (!engine || !engine->ctx || !prompt || !out_text) {
         set_error("complete requires engine, prompt, and out_text");
         return LLAMA_STACK_INVALID;
@@ -408,6 +421,7 @@ llama_stack_status llama_stack_complete_ex(llama_stack_engine *engine,
     }
     int32_t n_gen = 0;
     int32_t pos = n_prompt;
+    size_t emitted = 0;
     for (int32_t i = 0; i < max_tokens; i++) {
         llama_token id = llama_sampler_sample(smpl, engine->ctx, -1);
         llama_sampler_accept(smpl, id);
@@ -415,6 +429,27 @@ llama_stack_status llama_stack_complete_ex(llama_stack_engine *engine,
             break;
         }
         gen[n_gen++] = id;
+        if (on_token) {
+            char *now = detok(vocab, gen, n_gen);
+            if (!now) {
+                llama_sampler_free(smpl);
+                llama_batch_free(batch);
+                free(prompt_toks);
+                free(gen);
+                set_error("detokenize failed");
+                return LLAMA_STACK_RUNTIME;
+            }
+            size_t now_len = strlen(now);
+            int32_t stop = 0;
+            if (now_len > emitted) {
+                stop = on_token(now + emitted, user);
+                emitted = now_len;
+            }
+            free(now);
+            if (stop) {
+                break;
+            }
+        }
         batch.n_tokens = 1;
         batch.token[0] = id;
         batch.pos[0] = pos++;

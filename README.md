@@ -38,7 +38,7 @@ SBCL masks float traps around FFI — ggml/Metal/CUDA inexact/denormals otherwis
     (llama-cpp:free-engine e)))
 ```
 
-`embed` is the GGUF path that matches LM Studio (llama.cpp archs: `bert`, `qwen3`, …). `complete` is greedy / temperature sampling. Optional `:grammar` / `:grammar-root` (GBNF, ABI 2 `llama_stack_complete_ex`) goes first on the sampler chain. `n-gpu-layers` -1 = all (CUDA or Vulkan device, whichever ggml picks).
+`embed` is the GGUF path that matches LM Studio (llama.cpp archs: `bert`, `qwen3`, …). `complete` is greedy / temperature sampling. Optional `:grammar` / `:grammar-root` (GBNF, ABI 2 `llama_stack_complete_ex`) goes first on the sampler chain. `:on-token` (ABI 3 `llama_stack_complete_stream`) is called with each detok delta; a non-NIL return stops. `n-gpu-layers` -1 = all (CUDA or Vulkan device, whichever ggml picks).
 
 llm-protocol lives in [`llm-backend-llama-cpp`](https://github.com/egao1980/llm-backend-llama-cpp).
 

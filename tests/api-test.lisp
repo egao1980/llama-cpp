@@ -1,7 +1,7 @@
 (in-package #:llama-cpp/tests)
 
 (deftest abi-pin
-  (ok (= 2 llama-cpp:+llama-stack-abi-version+)))
+  (ok (= 3 llama-cpp:+llama-stack-abi-version+)))
 
 (deftest available-p-does-not-crash
   (ok (member (llama-cpp:llama-available-p) '(t nil))))
@@ -24,3 +24,11 @@
   (ok (signals (llama-cpp:complete "not-an-engine" "hi"
                                   :grammar "root ::= \"x\"")
                'llama-cpp:llama-error)))
+
+(deftest complete-rejects-on-token-without-engine
+  (ok (signals (llama-cpp:complete "not-an-engine" "hi"
+                                  :on-token (lambda (p) (declare (ignore p)) nil))
+               'llama-cpp:llama-error)))
+
+(deftest complete-stream-available-p-does-not-crash
+  (ok (member (llama-cpp:complete-stream-available-p) '(t nil))))

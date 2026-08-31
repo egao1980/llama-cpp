@@ -1,6 +1,6 @@
 (in-package #:llama-cpp)
 
-(defconstant +llama-stack-abi-version+ 2)
+(defconstant +llama-stack-abi-version+ 3)
 
 (defcenum llama-stack-status
   (:ok 0)
@@ -184,13 +184,44 @@
   (out-text :pointer)
   (prompt-tokens :pointer)
   (completion-tokens :pointer))
+(defcfun ("llama_stack_complete_stream" %complete-stream) llama-stack-status
+  (engine :pointer)
+  (prompt :string)
+  (params :pointer)
+  (on-token :pointer)
+  (user :pointer)
+  (out-text :pointer)
+  (prompt-tokens :pointer)
+  (completion-tokens :pointer))
 (defcfun ("llama_stack_string_free" %string-free) :void
   (s :pointer))
+
+(defvar *on-token-fn* nil)
+(defvar *on-token-error* nil)
+
+(defcallback %token-cb :int32 ((piece :pointer) (user :pointer))
+  (declare (ignore user))
+  (handler-case
+      (let ((s (if (or (null piece) (null-pointer-p piece))
+                   ""
+                   (foreign-string-to-lisp piece))))
+        (if (and *on-token-fn* (funcall *on-token-fn* s))
+            1
+            0))
+    (error (e)
+      (setf *on-token-error* e)
+      1)))
 
 (defun complete-ex-available-p ()
   "T when the loaded libllamastack exports llama_stack_complete_ex (ABI 2)."
   (and *llama-loaded*
        (let ((p (ignore-errors (foreign-symbol-pointer "llama_stack_complete_ex"))))
+         (and p (not (null-pointer-p p))))))
+
+(defun complete-stream-available-p ()
+  "T when the loaded libllamastack exports llama_stack_complete_stream (ABI 3)."
+  (and *llama-loaded*
+       (let ((p (ignore-errors (foreign-symbol-pointer "llama_stack_complete_stream"))))
          (and p (not (null-pointer-p p))))))
 
 ;;; Soft auto-load: overlay consumers get the lib; CI without natives still loads.

@@ -26,6 +26,7 @@
 
            #:complete
            #:complete-ex-available-p
+           #:complete-stream-available-p
            #:embed))
 
 (in-package #:llama-cpp)
