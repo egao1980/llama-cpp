@@ -1,6 +1,6 @@
 (in-package #:llama-cpp)
 
-(defconstant +llama-stack-abi-version+ 1)
+(defconstant +llama-stack-abi-version+ 2)
 
 (defcenum llama-stack-status
   (:ok 0)
@@ -18,6 +18,12 @@
   (n-embeddings :int32)
   (dim :int32)
   (prompt-tokens :int32))
+
+(defcstruct llama-stack-complete-params
+  (max-tokens :int32)
+  (temperature :float)
+  (grammar :pointer)
+  (grammar-root :pointer))
 
 (define-foreign-library libllamastack
   (:darwin (:or "libllamastack.dylib" "libllamastack.0.dylib"))
@@ -171,8 +177,21 @@
   (out-text :pointer)
   (prompt-tokens :pointer)
   (completion-tokens :pointer))
+(defcfun ("llama_stack_complete_ex" %complete-ex) llama-stack-status
+  (engine :pointer)
+  (prompt :string)
+  (params :pointer)
+  (out-text :pointer)
+  (prompt-tokens :pointer)
+  (completion-tokens :pointer))
 (defcfun ("llama_stack_string_free" %string-free) :void
   (s :pointer))
+
+(defun complete-ex-available-p ()
+  "T when the loaded libllamastack exports llama_stack_complete_ex (ABI 2)."
+  (and *llama-loaded*
+       (let ((p (ignore-errors (foreign-symbol-pointer "llama_stack_complete_ex"))))
+         (and p (not (null-pointer-p p))))))
 
 ;;; Soft auto-load: overlay consumers get the lib; CI without natives still loads.
 (eval-when (:load-toplevel :execute)

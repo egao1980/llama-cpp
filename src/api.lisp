@@ -130,11 +130,18 @@
                    (foreign-slot-value out '(:struct llama-stack-embedding-result) 'values))
             (%embedding-result-free out)))))))
 
-(defun complete (engine prompt &key (max-tokens 32) (temperature 0.0))
-  "Blocking completion. → (values text prompt-tokens completion-tokens)."
-  (let ((e (ensure-engine engine)))
+(defun complete (engine prompt &key (max-tokens 32) (temperature 0.0)
+                  grammar grammar-root)
+  "Blocking completion. GRAMMAR is GBNF (GRAMMAR-ROOT defaults to \"root\").
+   → (values text prompt-tokens completion-tokens)."
+  (let ((e (ensure-engine engine))
+        (g (and grammar (plusp (length grammar)) grammar))
+        (root (and grammar-root (plusp (length grammar-root)) grammar-root)))
     (unless (and prompt (plusp (length prompt)))
       (error 'llama-error :message "complete requires a prompt"))
+    (when (and g (not (complete-ex-available-p)))
+      (error 'llama-error
+             :message "grammar requires libllamastack ABI 2 (rebuild native)"))
     (with-foreign-objects ((out :pointer)
                            (pt :int32)
                            (ct :int32))
@@ -142,9 +149,36 @@
             (mem-ref pt :int32) 0
             (mem-ref ct :int32) 0)
       (%with-foreign-floats
-        (%check (%complete (engine-pointer e) prompt max-tokens
-                           (float temperature 1f0) out pt ct)
-                "llama_stack_complete"))
+        (if (or g (complete-ex-available-p))
+            (with-foreign-object (params '(:struct llama-stack-complete-params))
+              (dotimes (i (foreign-type-size '(:struct llama-stack-complete-params)))
+                (setf (mem-aref params :uint8 i) 0))
+              (setf (foreign-slot-value params '(:struct llama-stack-complete-params)
+                                        'max-tokens)
+                    (or max-tokens 32)
+                    (foreign-slot-value params '(:struct llama-stack-complete-params)
+                                        'temperature)
+                    (float temperature 1f0))
+              (let ((g-ptr (and g (foreign-string-alloc g)))
+                    (r-ptr (and root (foreign-string-alloc root))))
+                (unwind-protect
+                     (progn
+                       (when g-ptr
+                         (setf (foreign-slot-value
+                                params '(:struct llama-stack-complete-params) 'grammar)
+                               g-ptr))
+                       (when r-ptr
+                         (setf (foreign-slot-value
+                                params '(:struct llama-stack-complete-params)
+                                'grammar-root)
+                               r-ptr))
+                       (%check (%complete-ex (engine-pointer e) prompt params out pt ct)
+                               "llama_stack_complete_ex"))
+                  (when g-ptr (foreign-string-free g-ptr))
+                  (when r-ptr (foreign-string-free r-ptr)))))
+            (%check (%complete (engine-pointer e) prompt max-tokens
+                               (float temperature 1f0) out pt ct)
+                    "llama_stack_complete")))
       (let ((ptr (mem-ref out :pointer)))
         (unwind-protect
              (values (if (or (null ptr) (null-pointer-p ptr))

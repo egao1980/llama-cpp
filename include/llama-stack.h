@@ -22,7 +22,7 @@ extern "C" {
 #endif
 #endif
 
-#define LLAMA_STACK_ABI_VERSION 1
+#define LLAMA_STACK_ABI_VERSION 2
 
 typedef enum llama_stack_status {
     LLAMA_STACK_OK = 0,
@@ -61,6 +61,13 @@ LLAMA_STACK_API llama_stack_status llama_stack_embed(llama_stack_engine *engine,
                                                      llama_stack_embedding_result *out);
 LLAMA_STACK_API void llama_stack_embedding_result_free(llama_stack_embedding_result *out);
 
+typedef struct llama_stack_complete_params {
+    int32_t max_tokens;
+    float temperature;
+    const char *grammar;      /* GBNF; NULL / empty = unconstrained */
+    const char *grammar_root; /* NULL / empty = "root" */
+} llama_stack_complete_params;
+
 LLAMA_STACK_API llama_stack_status llama_stack_complete(llama_stack_engine *engine,
                                                         const char *prompt,
                                                         int32_t max_tokens,
@@ -68,6 +75,12 @@ LLAMA_STACK_API llama_stack_status llama_stack_complete(llama_stack_engine *engi
                                                         char **out_text,
                                                         int32_t *prompt_tokens,
                                                         int32_t *completion_tokens);
+LLAMA_STACK_API llama_stack_status llama_stack_complete_ex(llama_stack_engine *engine,
+                                                           const char *prompt,
+                                                           const llama_stack_complete_params *params,
+                                                           char **out_text,
+                                                           int32_t *prompt_tokens,
+                                                           int32_t *completion_tokens);
 LLAMA_STACK_API void llama_stack_string_free(char *s);
 
 #ifdef __cplusplus
