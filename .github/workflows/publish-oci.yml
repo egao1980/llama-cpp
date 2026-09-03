@@ -272,7 +272,6 @@ jobs:
       package-name: llama-cpp
       version: ${{ needs.resolve-version.outputs.version }}
       registry: ${{ inputs.registry || 'ghcr.io' }}
-      packager-tag: "0.10.0"
       sbcl-dynamic-space-mb: 12288
       source-paths: |
         llama-cpp.asd
