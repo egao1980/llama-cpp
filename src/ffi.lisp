@@ -83,12 +83,32 @@
     (:cublas '("libcublas.so.12" "libcublas.so.13" "libcublas.so"
                "cublas64_12.dll" "cublas64_13.dll"))))
 
+(defun %shared-object-loaded-p (path)
+  "T when PATH is already a live SBCL shared object.
+SBCL's load-shared-object dlcloses a pathname match before dlopen. On macOS 26
+that unloads libggml-base and re-runs its static initializer, which aborts:
+GGML_ASSERT(prev != ggml_uncaught_exception). cl-repo-init already dlopens
+every native/*.dylib before this system loads."
+  #+sbcl
+  (let ((p (pathname path)))
+    (find-if (lambda (obj)
+               (and (equal p (sb-alien::shared-object-pathname obj))
+                    (sb-alien::shared-object-handle obj)))
+             sb-alien::*shared-objects*))
+  #-sbcl
+  nil)
+
+(defun %load-native (path)
+  "dlopen PATH unless SBCL already has that pathname open."
+  (unless (%shared-object-loaded-p path)
+    (load-foreign-library path)))
+
 (defun %preload-cuda-runtime (dir)
   "Absolute-preload CUDA user-mode deps. Never libcuda / nvcuda (driver)."
   (dolist (which '(:cudart :cublaslt :cublas))
     (let ((abs (%find-named dir (%cuda-runtime-names which))))
       (when abs
-        (handler-case (load-foreign-library abs)
+        (handler-case (%load-native abs)
           (error (e)
             (warn "llama-cpp: failed to preload ~a (~a)" abs e))))))
   t)
@@ -114,7 +134,7 @@
   (dolist (name (%ggml-preload-names))
     (let ((abs (%find-named dir (list name))))
       (when abs
-        (handler-case (load-foreign-library abs)
+        (handler-case (%load-native abs)
           (error (e)
             (warn "llama-cpp: failed to preload ~a (~a)" abs e))))))
   t)
@@ -132,7 +152,7 @@
             (let ((abs (%find-named dir (%lib-candidates))))
               (when abs
                 (%preload-deps dir)
-                (load-foreign-library abs)
+                (%load-native abs)
                 (setf preloaded t))))))
       (unless preloaded
         (handler-case (load-foreign-library 'libllamastack)

@@ -1,5 +1,5 @@
 (defsystem "llama-cpp"
-  :version "0.1.5"
+  :version "0.1.6"
   :description "CFFI + native overlays for ggml-org/llama.cpp (linux/amd64 and windows/amd64 are CUDA+Vulkan)"
   :author "egao1980"
   :license "MIT"
@@ -51,17 +51,11 @@
       :layers ((:role "native-library"
                 :files (("lib/darwin-arm64/libllamastack.dylib" . "libllamastack.dylib")
                         ("lib/darwin-arm64/libllama.dylib" . "libllama.dylib")
-                        ("lib/darwin-arm64/libllama.0.dylib" . "libllama.0.dylib")
                         ("lib/darwin-arm64/libggml.dylib" . "libggml.dylib")
-                        ("lib/darwin-arm64/libggml.0.dylib" . "libggml.0.dylib")
                         ("lib/darwin-arm64/libggml-base.dylib" . "libggml-base.dylib")
-                        ("lib/darwin-arm64/libggml-base.0.dylib" . "libggml-base.0.dylib")
                         ("lib/darwin-arm64/libggml-cpu.dylib" . "libggml-cpu.dylib")
-                        ("lib/darwin-arm64/libggml-cpu.0.dylib" . "libggml-cpu.0.dylib")
                         ("lib/darwin-arm64/libggml-metal.dylib" . "libggml-metal.dylib")
-                        ("lib/darwin-arm64/libggml-metal.0.dylib" . "libggml-metal.0.dylib")
-                        ("lib/darwin-arm64/libggml-blas.dylib" . "libggml-blas.dylib")
-                        ("lib/darwin-arm64/libggml-blas.0.dylib" . "libggml-blas.0.dylib")))))
+                        ("lib/darwin-arm64/libggml-blas.dylib" . "libggml-blas.dylib")))))
      (:platform (:os "windows" :arch "amd64")
       :layers ((:role "native-library"
                 :files (("lib/windows-amd64/llamastack.dll" . "llamastack.dll")
