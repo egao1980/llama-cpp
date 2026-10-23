@@ -8,7 +8,7 @@ Lisp binds **`include/llama-stack.h`** (`libllamastack`), a small stable ABI. `l
 |---|---|
 | `linux/amd64` | **CUDA + Vulkan** (`-DGGML_CUDA=ON -DGGML_VULKAN=ON`, archs `80;86;89;90a`) |
 | `linux/arm64` | CPU |
-| `darwin/arm64` | Metal + Accelerate BLAS |
+| `darwin/arm64` | Metal + Accelerate BLAS. One dylib per library (`@rpath` / `@loader_path`); no `lib*.0.dylib` twin. |
 | `windows/amd64` | **CUDA + Vulkan** |
 
 `arrange-native-artifacts` keys **os-arch only**, so the published linux/amd64 and windows/amd64 overlays **are** the GPU builds. CPU (or cuda-only / vulkan-only) on those pairs is local: `LLAMA_CPP_FLAVOR=cpu|cuda|vulkan` → `lib/<os>-<arch>-<flavor>/`.

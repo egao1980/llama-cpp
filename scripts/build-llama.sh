@@ -86,6 +86,8 @@ if [[ "${LLAMA_CPP_SKIP_CMAKE:-}" != "1" ]]; then
   cmake_args=(
     -DCMAKE_BUILD_TYPE=Release
     -DBUILD_SHARED_LIBS=ON
+    # Backends link libggml-base; they are not a second dlopen of ggml.
+    -DGGML_BACKEND_DL=OFF
     -DGGML_NATIVE=OFF
     -DGGML_HIP=OFF
     -DLLAMA_BUILD_TESTS=OFF
@@ -107,7 +109,13 @@ if [[ "${LLAMA_CPP_SKIP_CMAKE:-}" != "1" ]]; then
     cmake_args+=(-DGGML_VULKAN=OFF)
   fi
   if [[ "$os" == "darwin" ]]; then
-    cmake_args+=(-DGGML_METAL=ON -DGGML_BLAS=ON)
+    cmake_args+=(
+      -DGGML_METAL=ON
+      -DGGML_BLAS=ON
+      -DCMAKE_MACOSX_RPATH=ON
+      -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON
+      -DCMAKE_INSTALL_RPATH=@loader_path
+    )
   else
     cmake_args+=(-DGGML_METAL=OFF -DGGML_BLAS=OFF)
   fi
@@ -191,8 +199,61 @@ drop_ggml_patch_versions() {
   done
 }
 
+# cmake writes libggml-base.dylib -> libggml-base.0.dylib as two inodes
+# after materialize_symlinks, both with LC_ID_DYLIB @rpath/libggml-base.0.dylib,
+# and an absolute build-tree LC_RPATH. cl-repo-init dlopens every file; a
+# later load-shared-object of the same pathname dlcloses first. macOS 26
+# re-runs the image initializer and GGML_ASSERT(prev != ggml_uncaught_exception)
+# fires. Keep one unversioned dylib whose deps resolve via @loader_path.
+darwin_collapse_dylibs() {
+  local out="$1"
+  local f id newid cur rp pair
+  local -a pairs=()
+  shopt -s nullglob
+  for f in "$out"/*.dylib; do
+    [[ -f "$f" && ! -L "$f" ]] || continue
+    id="$(otool -D "$f" | awk 'NR==2 {print}')"
+    if [[ "$id" =~ ^@rpath/(.+)\.0\.dylib$ ]]; then
+      pairs+=("${id}|@rpath/${BASH_REMATCH[1]}.dylib")
+    fi
+  done
+  if ((${#pairs[@]})); then
+    while IFS= read -r pair; do
+      [[ -n "$pair" ]] || continue
+      id="${pair%%|*}"
+      newid="${pair#*|}"
+      for f in "$out"/*.dylib; do
+        [[ -f "$f" && ! -L "$f" ]] || continue
+        [[ "$(basename "$f")" == *.0.dylib ]] && continue
+        cur="$(otool -D "$f" | awk 'NR==2 {print}')"
+        if [[ "$cur" == "$id" ]]; then
+          install_name_tool -id "$newid" "$f"
+        fi
+        if otool -L "$f" | awk 'NR>1 {print $1}' | grep -qx "$id"; then
+          install_name_tool -change "$id" "$newid" "$f"
+        fi
+      done
+    done < <(printf '%s\n' "${pairs[@]}" | sort -u)
+  fi
+  for f in "$out"/*.dylib; do
+    [[ -f "$f" && ! -L "$f" ]] || continue
+    [[ "$(basename "$f")" == *.0.dylib ]] && continue
+    while IFS= read -r rp; do
+      [[ -n "$rp" ]] || continue
+      install_name_tool -delete_rpath "$rp" "$f"
+    done < <(otool -l "$f" | awk '/cmd LC_RPATH/{p=1;next} /cmd /{p=0} p && $1=="path"{print $2}')
+    install_name_tool -add_rpath @loader_path "$f"
+    codesign -s - -f "$f" >/dev/null
+  done
+  rm -f "$out"/*.0.dylib
+  shopt -u nullglob
+}
+
 materialize_symlinks
 drop_ggml_patch_versions
+if [[ "$os" == "darwin" ]]; then
+  darwin_collapse_dylibs "$OUT"
+fi
 chmod a+rX "$OUT"/* 2>/dev/null || true
 
 if [[ "$os" == "linux" ]] && command -v patchelf >/dev/null; then
