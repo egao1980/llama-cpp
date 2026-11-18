@@ -9,7 +9,6 @@
            #:llama-not-loaded
            #:llama-missing-model
 
-           #:libllamastack
            #:load-llama
            #:llama-available-p
            #:llama-version
