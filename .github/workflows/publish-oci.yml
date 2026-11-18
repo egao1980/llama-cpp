@@ -90,6 +90,13 @@ jobs:
           path: native-bundle
       - name: Verify GPU overlay
         run: |
+          # Artifacts built before stage-cuda-runtime.sh staged SONAMEs only also
+          # carry full-version copies (libcublasLt.so.12.8.4.1); keep the SONAME.
+          for f in native-bundle/libcudart.so.*.* native-bundle/libcublas.so.*.* native-bundle/libcublasLt.so.*.*; do
+            [ -e "$f" ] || continue
+            base="${f%%.so.*}.so"; rest="${f#"$base".}"
+            if [ -e "$base.${rest%%.*}" ]; then rm -f "$f"; fi
+          done
           test -e native-bundle/libllamastack.so
           test -e native-bundle/libggml-cuda.so
           test -e native-bundle/libggml-vulkan.so
