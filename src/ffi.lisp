@@ -26,139 +26,21 @@
   (grammar-root :pointer)
   (parsed :pointer))
 
-(define-foreign-library libllamastack
-  (:darwin (:or "libllamastack.dylib" "libllamastack.0.dylib"))
-  (:unix (:or "libllamastack.so" "libllamastack.so.0"))
-  (:windows (:or "llamastack.dll" "libllamastack.dll"))
-  (t (:default "libllamastack")))
-
-(defun %host-os ()
-  #+windows "windows"
-  #+darwin "darwin"
-  #+linux "linux"
-  #-(or windows darwin linux) "unknown")
-
-(defun %host-arch ()
-  #+(or x86-64 x64) "amd64"
-  #+(or arm64 aarch64) "arm64"
-  #-(or x86-64 x64 arm64 aarch64) "unknown")
-
-(defun %flavor ()
-  (let ((v (uiop:getenv "LLAMA_CPP_FLAVOR")))
-    (when (and v (plusp (length v)))
-      (string-downcase v))))
-
-(defun %native-search-dirs ()
-  "Overlay native/, lib/<os>-<arch>[-flavor]/. No LD_LIBRARY_PATH / DYLD_LIBRARY_PATH."
-  (let ((dirs '())
-        (flavor (%flavor)))
-    (dolist (var '("LLAMA_CPP_NATIVE"))
-      (let ((v (uiop:getenv var)))
-        (when (and v (plusp (length v)))
-          (push v dirs))))
-    (ignore-errors
-      (let* ((sys (asdf:find-system :llama-cpp nil))
-             (root (when sys (asdf:system-source-directory sys))))
-        (when root
-          (push (namestring (merge-pathnames "native/" root)) dirs)
-          (let ((base (format nil "lib/~A-~A" (%host-os) (%host-arch))))
-            (when flavor
-              (push (namestring (merge-pathnames (format nil "~A-~A/" base flavor) root))
-                    dirs))
-            (push (namestring (merge-pathnames (format nil "~A/" base) root)) dirs)))))
-    (nreverse dirs)))
-
-(defun %lib-candidates ()
-  #+windows '("llamastack.dll" "libllamastack.dll")
-  #+darwin '("libllamastack.dylib")
-  #+(and unix (not darwin)) '("libllamastack.so")
-  #-(or windows darwin unix) '("libllamastack.so"))
-
-(defun %cuda-runtime-names (which)
-  (ecase which
-    (:cudart '("libcudart.so.12" "libcudart.so.13" "libcudart.so"
-               "cudart64_12.dll" "cudart64_13.dll"))
-    (:cublaslt '("libcublasLt.so.12" "libcublasLt.so.13" "libcublasLt.so"
-                 "cublasLt64_12.dll" "cublasLt64_13.dll"))
-    (:cublas '("libcublas.so.12" "libcublas.so.13" "libcublas.so"
-               "cublas64_12.dll" "cublas64_13.dll"))))
-
-(defun %shared-object-loaded-p (path)
-  "T when PATH is already a live SBCL shared object.
-SBCL's load-shared-object dlcloses a pathname match before dlopen. On macOS 26
-that unloads libggml-base and re-runs its static initializer, which aborts:
-GGML_ASSERT(prev != ggml_uncaught_exception). cl-repo-init already dlopens
-every native/*.dylib before this system loads."
-  #+sbcl
-  (let ((p (pathname path)))
-    (find-if (lambda (obj)
-               (and (equal p (sb-alien::shared-object-pathname obj))
-                    (sb-alien::shared-object-handle obj)))
-             sb-alien::*shared-objects*))
-  #-sbcl
-  nil)
-
-(defun %load-native (path)
-  "dlopen PATH unless SBCL already has that pathname open."
-  (unless (%shared-object-loaded-p path)
-    (load-foreign-library path)))
-
-(defun %preload-cuda-runtime (dir)
-  "Absolute-preload CUDA user-mode deps. Never libcuda / nvcuda (driver)."
-  (dolist (which '(:cudart :cublaslt :cublas))
-    (let ((abs (%find-named dir (%cuda-runtime-names which))))
-      (when abs
-        (handler-case (%load-native abs)
-          (error (e)
-            (warn "llama-cpp: failed to preload ~a (~a)" abs e))))))
-  t)
-
-(defun %ggml-preload-names ()
-  #+darwin '("libggml-base.dylib" "libggml-cpu.dylib" "libggml-metal.dylib"
-             "libggml-blas.dylib" "libggml.dylib" "libllama.dylib")
-  #+(and unix (not darwin)) '("libggml-base.so" "libggml-cpu.so"
-                              "libggml-cuda.so" "libggml-vulkan.so"
-                              "libggml.so" "libllama.so")
-  #+windows '("ggml-base.dll" "ggml-cpu.dll" "ggml-cuda.dll" "ggml-vulkan.dll"
-              "ggml.dll" "llama.dll")
-  #-(or windows darwin unix) '())
-
-(defun %find-named (dir names)
-  (dolist (name names)
-    (let ((p (merge-pathnames name (uiop:ensure-directory-pathname dir))))
-      (when (probe-file p)
-        (return (namestring (truename p)))))))
-
-(defun %preload-deps (dir)
-  (%preload-cuda-runtime dir)
-  (dolist (name (%ggml-preload-names))
-    (let ((abs (%find-named dir (list name))))
-      (when abs
-        (handler-case (%load-native abs)
-          (error (e)
-            (warn "llama-cpp: failed to preload ~a (~a)" abs e))))))
-  t)
-
 (defvar *llama-loaded* nil)
 
 (defun load-llama ()
-  "Load libllamastack (and ggml/llama deps). Idempotent."
+  "Load libllamastack and its ggml/CUDA dependencies. Idempotent.
+ASDF load already ran the :native-library components (llama-cpp.asd); this
+retries the missing ones, e.g. when LLAMA_CPP_NATIVE was set after load, and
+signals LLAMA-NOT-LOADED while libllamastack is still absent."
   (unless *llama-loaded*
-    (let ((preloaded nil))
-      (dolist (dir (%native-search-dirs))
-        (when (and dir (uiop:directory-exists-p dir))
-          (pushnew dir cffi:*foreign-library-directories* :test #'equal)
-          (unless preloaded
-            (let ((abs (%find-named dir (%lib-candidates))))
-              (when abs
-                (%preload-deps dir)
-                (%load-native abs)
-                (setf preloaded t))))))
-      (unless preloaded
-        (handler-case (load-foreign-library 'libllamastack)
-          (error (e)
-            (error 'llama-not-loaded
-                   :message (princ-to-string e))))))
+    (dolist (c (asdf:component-children (asdf:find-system "llama-cpp")))
+      (when (typep c 'asdf-native:native-library)
+        (handler-bind ((asdf-native:native-library-missing #'muffle-warning))
+          (asdf-native:load-native-library c))))
+    (unless (asdf-native:library-loaded-path "llama-cpp" "llamastack")
+      (error 'llama-not-loaded
+             :message "libllamastack not found (LLAMA_CPP_NATIVE, native/, lib/<os>-<arch>/)"))
     (setf *llama-loaded* t)
     (let ((abi (ignore-errors (%abi-version))))
       (when (and abi (/= abi +llama-stack-abi-version+))
