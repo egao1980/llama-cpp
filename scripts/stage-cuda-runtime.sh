@@ -15,7 +15,7 @@ is_driver() {
 
 copy_user_mode() {
   local src="$1"
-  local name real rbase
+  local name real
   name="$(basename "$src")"
   # ggml-cuda DT_NEEDED libcuda.so.1 (cuda_driver / VMM). Host provides it.
   if is_driver "$name"; then
@@ -23,20 +23,15 @@ copy_user_mode() {
   fi
   # ldconfig gives SONAME symlinks (libcudart.so.12 -> libcudart.so.12.8.90).
   # cp -a leaves a dangling link; packager and [[ -e ]] need a regular file.
+  # Stage the SONAME only: DT_NEEDED and asdf-native use it, and a second copy
+  # under the full version (libcublasLt.so.12.8.4.1, 717 MB) doubles the overlay.
   real="$(readlink -f "$src" 2>/dev/null || true)"
   if [[ -z "$real" || ! -f "$real" ]]; then
     echo "cannot resolve CUDA library $src" >&2
     exit 1
   fi
-  rbase="$(basename "$real")"
-  if [[ ! -f "$OUT/$rbase" || -L "$OUT/$rbase" ]]; then
-    rm -f "$OUT/$rbase"
-    cp -L "$real" "$OUT/$rbase"
-  fi
-  if [[ "$name" != "$rbase" ]]; then
-    rm -f "$OUT/$name"
-    cp -L "$real" "$OUT/$name"
-  fi
+  rm -f "$OUT/$name"
+  cp -L "$real" "$OUT/$name"
 }
 
 resolve_soname() {
