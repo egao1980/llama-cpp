@@ -311,6 +311,9 @@
 (defun %free-live-handles-hook ()
   (ignore-errors (free-live-handles)))
 
-#+sbcl (pushnew '%free-live-handles-hook sb-ext:*exit-hooks*)
+(progn
+  ;; Exit: free native handles before C atexit tears ggml/Metal down (#18).
+  #+sbcl (pushnew '%free-live-handles-hook sb-ext:*exit-hooks*)
+  #+ccl (pushnew '%free-live-handles-hook ccl::*lisp-cleanup-functions*))
 
 (uiop:register-image-dump-hook '%free-live-handles-hook)

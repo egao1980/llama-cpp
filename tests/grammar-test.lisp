@@ -155,16 +155,46 @@
   (format nil "got ~s (child exit ~a~@[: ~a~])"
           result code (and (null result) (abort-reason err))))
 
-(deftest grammar-exception-becomes-llama-error
-  ;; Fix 1 on its own. No token's piece can start with NUL, so the grammar
-  ;; sampler rules out every candidate, greedy picks one anyway and accepting
-  ;; it throws std::runtime_error. libllamastack 0.2.0 aborts the image here
-  ;; (even without the double accept); now it is a LLAMA-ERROR :RUNTIME.
+(deftest grammar-dead-end-becomes-llama-error
+  ;; No token's piece can start with NUL, so the grammar sampler rules out
+  ;; every candidate. llama_sampler_sample picks one anyway (greedy keeps
+  ;; candidate 0) and accepting it fails: std::runtime_error here, GGML_ABORT
+  ;; when candidate 0 is end-of-generation (grammar-eog-test.lisp).
+  ;; libllamastack 0.2.0 aborts the image. Now the shim sees that nothing is
+  ;; left before it picks and accepts: a LLAMA-ERROR :RUNTIME that says so.
   (with-grammar-child ((result code err) "root ::= \"\\x00\"")
     (ok (and (eq (first result) :llama-error)
-             (search "C++ exception" (second result))
+             (search "grammar dead end" (second result))
              (search "RUNTIME" (second result)))
         (describe-child result code err))))
+
+(deftest guard-turns-each-exception-into-runtime
+  ;; The ABI guard on its own, in the library that is loaded (no model
+  ;; needed). COMPLETE no longer reaches llama.cpp's grammar throws (the dead
+  ;; end is seen first), so llama_stack_guard_selftest throws instead: a
+  ;; std::exception, std::bad_alloc and a non-std exception each come back as
+  ;; :RUNTIME with the message, never as an abort of the child.
+  (cond
+   ((not (llama-cpp:llama-available-p)) (skip "libllamastack not present"))
+   ((not (llama-cpp::guard-selftest-available-p))
+    (skip "libllamastack without llama_stack_guard_selftest"))
+   #-sbcl (t (skip "child-image test is SBCL-only"))
+   #+sbcl
+   (t (multiple-value-bind (out err code)
+          (run-child-sbcl
+           "(let ((*print-pretty* nil)) (format t \"~&RESULT ~s~%\" (loop for kind in '(0 1 2 3) collect (list (llama-cpp::%guard-selftest kind) (llama-cpp::%last-error)))) (finish-output))")
+        (let* ((start (search (format nil "~%RESULT ") (format nil "~%~a" out)))
+               (result (and start
+                            (with-standard-io-syntax
+                                (let ((*read-eval* nil))
+                                  (ignore-errors
+                                    (read-from-string out t nil :start (+ start 7))))))))
+          (ok (equal result '((:ok "")
+                              (:runtime "C++ exception: guard selftest")
+                              (:runtime "out of memory")
+                              (:runtime "unknown C++ exception")))
+              (format nil "got ~s (child exit ~a~@[: ~a~])"
+                      result code (and (null result) (abort-reason err)))))))))
 
 (deftest bad-gbnf-is-llama-error
   ;; An undefined rule: llama_sampler_init_grammar returns NULL → :INVALID.
@@ -192,6 +222,16 @@
 (deftest sampled-grammar-complete-is-a-sentence
   ;; Temperature > 0 (temp + dist after the grammar) also ends at the grammar.
   (with-grammar-child ((result code err) *yes-no-grammar* :temperature 0.8)
+    (ok (and (eq (first result) :ok) (yes-or-no-p* (second result)))
+        (describe-child result code err))))
+
+(deftest extreme-temperatures-keep-to-the-grammar
+  ;; temp divides the logits the grammar left: 1e-30 makes them +-inf, 1e30
+  ;; makes them all about 0. dist still picks among them only.
+  (with-grammar-child ((result code err) *yes-no-grammar* :temperature 1e-30)
+    (ok (and (eq (first result) :ok) (yes-or-no-p* (second result)))
+        (describe-child result code err)))
+  (with-grammar-child ((result code err) *yes-no-grammar* :temperature 1e30)
     (ok (and (eq (first result) :ok) (yes-or-no-p* (second result)))
         (describe-child result code err))))
 

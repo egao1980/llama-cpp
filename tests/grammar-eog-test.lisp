@@ -81,3 +81,19 @@
   (with-chat-model-child ((result code err) "root ::= \"\\x00\"")
     (ok (eq (first result) :llama-error)
         (describe-chat-child result code err))))
+
+(deftest end-of-turn-grammar-is-a-dead-end-error
+  ;; The grammar can never finish: llama.cpp masks <|im_end|> (EOG) until the
+  ;; grammar is complete, and the grammar is complete only after it.
+  (with-chat-model-child ((result code err) "root ::= (\"yes\" | \"no\") <|im_end|>")
+    (ok (and (eq (first result) :llama-error)
+             (search "grammar dead end" (second result))
+             (search "RUNTIME" (second result)))
+        (describe-chat-child result code err))))
+
+(deftest yes-no-grammar-on-a-chat-vocab-ends-at-eog
+  ;; Token 0 is <|endoftext|>: once "yes" or "no" is out, only EOG is left
+  ;; and the completion stops there.
+  (with-chat-model-child ((result code err) *yes-no-grammar*)
+    (ok (and (eq (first result) :ok) (yes-or-no-p* (second result)))
+        (describe-chat-child result code err))))

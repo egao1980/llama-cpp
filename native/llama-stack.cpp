@@ -23,6 +23,7 @@
 #include <exception>
 #include <memory>
 #include <new>
+#include <stdexcept>
 #include <vector>
 
 struct llama_stack_engine {
@@ -328,6 +329,73 @@ llama_stack_status embed_impl(llama_stack_engine *engine, const char **texts, in
     return LLAMA_STACK_OK;
 }
 
+// LLAMA_STACK_RUNTIME's message for a grammar dead end after GEN.
+void dead_end_error(const llama_vocab *vocab, const std::vector<llama_token> &gen) {
+    c_string so_far = detok(vocab, gen);
+    const char *text = so_far ? so_far.get() : "";
+    // At most 200 bytes of it, cut at a UTF-8 character boundary.
+    size_t n = std::strlen(text);
+    if (n > 200) {
+        n = 200;
+        while (n > 0 && (((unsigned char)text[n]) & 0xC0) == 0x80) {
+            n--;
+        }
+    }
+    std::snprintf(g_last_error, ERR_MAX,
+                  "grammar dead end: the grammar allows no token after %d generated token(s)"
+                  " \"%.*s%s\". llama.cpp masks end-of-generation tokens until the grammar is"
+                  " complete, so a grammar that names one (<|im_end|>, </s>) cannot finish;"
+                  " end the grammar where the text ends",
+                  (int)gen.size(), (int)n, text, n < std::strlen(text) ? "..." : "");
+}
+
+enum class sample_result { sampled, dead_end, failed };
+
+// The next token from the logits of the last decode. GRMR (or null) goes
+// first, CHAIN (greedy, or temp + dist) picks among what it leaves. Unlike
+// llama_sampler_sample this accepts nothing, and it notices a grammar dead
+// end: the grammar rules out every token. llama_sampler_sample would pick one
+// anyway (greedy keeps candidate 0) and accepting it fails in llama.cpp,
+// with std::runtime_error, or with GGML_ABORT (abort(), which no guard
+// catches) when that token is end-of-generation. llama-cpp#17.
+sample_result sample_next(llama_sampler *grmr, llama_sampler *chain, llama_context *ctx,
+                               int32_t n_vocab, std::vector<llama_token_data> &cur,
+                               llama_token *out) {
+    const float *logits = llama_get_logits_ith(ctx, -1);
+    if (!logits) {
+        set_error("no logits for the last token");
+        return sample_result::failed;
+    }
+    cur.resize((size_t)n_vocab);
+    for (llama_token t = 0; t < n_vocab; t++) {
+        cur[(size_t)t] = llama_token_data{t, logits[t], 0.0f};
+    }
+    llama_token_data_array cur_p = {cur.data(), cur.size(), -1, false};
+    if (grmr) {
+        // The grammar marks the tokens it rules out with -inf (end-of-generation
+        // tokens too, until the grammar is complete). Only the rest go on to
+        // the chain, so whatever it picks is a token the grammar accepts.
+        llama_sampler_apply(grmr, &cur_p);
+        size_t kept = 0;
+        for (size_t i = 0; i < cur_p.size; i++) {
+            if (cur_p.data[i].logit > -INFINITY) {  // false for -inf and NaN
+                cur_p.data[kept++] = cur_p.data[i];
+            }
+        }
+        if (kept == 0) {
+            return sample_result::dead_end;
+        }
+        cur_p.size = kept;
+    }
+    llama_sampler_apply(chain, &cur_p);
+    if (cur_p.selected < 0 || cur_p.selected >= (int64_t)cur_p.size) {
+        set_error("the sampler selected no token");
+        return sample_result::failed;
+    }
+    *out = cur_p.data[cur_p.selected].id;
+    return sample_result::sampled;
+}
+
 llama_stack_status complete_impl(llama_stack_engine *engine, const char *prompt,
                                  const llama_stack_complete_params *params,
                                  llama_stack_token_cb on_token, void *user, char **out_text,
@@ -371,27 +439,26 @@ llama_stack_status complete_impl(llama_stack_engine *engine, const char *prompt,
         set_error("prompt longer than n_ctx");
         return LLAMA_STACK_INVALID;
     }
-    // The grammar sampler goes first, so the greedy / dist pick is a token the
-    // grammar allows. Parse it before decoding: a bad grammar costs no decode.
-    sampler_ptr smpl(llama_sampler_chain_init(llama_sampler_chain_default_params()));
-    if (!smpl) {
-        set_error("sampler chain init failed");
-        return LLAMA_STACK_RUNTIME;
-    }
+    // The grammar is its own sampler, applied before the chain (sample_next).
+    // Parse it before decoding: a bad grammar costs no decode.
+    sampler_ptr grmr;
     if (parsed && parsed->smpl) {
-        llama_sampler *grmr = llama_sampler_clone(parsed->smpl);
+        grmr.reset(llama_sampler_clone(parsed->smpl));
         if (!grmr) {
             set_error("grammar clone failed");
             return LLAMA_STACK_RUNTIME;
         }
-        llama_sampler_chain_add(smpl.get(), grmr);
     } else if (grammar) {
-        llama_sampler *grmr = llama_sampler_init_grammar(vocab, grammar, grammar_root);
+        grmr.reset(llama_sampler_init_grammar(vocab, grammar, grammar_root));
         if (!grmr) {
             set_error("grammar parse failed");
             return LLAMA_STACK_INVALID;
         }
-        llama_sampler_chain_add(smpl.get(), grmr);
+    }
+    sampler_ptr smpl(llama_sampler_chain_init(llama_sampler_chain_default_params()));
+    if (!smpl) {
+        set_error("sampler chain init failed");
+        return LLAMA_STACK_RUNTIME;
     }
     if (temperature <= 0.0f) {
         llama_sampler_chain_add(smpl.get(), llama_sampler_init_greedy());
@@ -414,21 +481,33 @@ llama_stack_status complete_impl(llama_stack_engine *engine, const char *prompt,
         set_errorf("llama_decode failed (%d)", rc);
         return LLAMA_STACK_RUNTIME;
     }
+    const int32_t n_vocab = llama_vocab_n_tokens(vocab);
+    std::vector<llama_token_data> cur;
     std::vector<llama_token> gen;
     gen.reserve((size_t)max_tokens);
     int32_t pos = n_prompt;
     size_t emitted = 0;
     for (int32_t i = 0; i < max_tokens && pos < engine->n_ctx; i++) {
-        // llama_sampler_sample applies the chain and accepts the token on every
-        // sampler in it (the grammar advances here). A second
-        // llama_sampler_accept would feed the grammar the same piece twice:
-        // "Unexpected empty grammar stack after accepting piece".
-        const llama_token id = llama_sampler_sample(smpl.get(), engine->ctx, -1);
-        // A complete grammar allows only end-of-generation tokens, so a
+        llama_token id = LLAMA_TOKEN_NULL;
+        switch (sample_next(grmr.get(), smpl.get(), engine->ctx, n_vocab, cur, &id)) {
+        case sample_result::sampled:
+            break;
+        case sample_result::dead_end:
+            dead_end_error(vocab, gen);
+            return LLAMA_STACK_RUNTIME;
+        case sample_result::failed:
+            return LLAMA_STACK_RUNTIME;
+        }
+        // The grammar allows end-of-generation only once it is complete, so a
         // grammar-constrained completion stops here with a full sentence.
+        // Accept once, on each sampler: the grammar advances by the piece.
         if (llama_vocab_is_eog(vocab, id)) {
             break;
         }
+        if (grmr) {
+            llama_sampler_accept(grmr.get(), id);
+        }
+        llama_sampler_accept(smpl.get(), id);
         gen.push_back(id);
         if (on_token) {
             c_string now = detok(vocab, gen);
@@ -593,6 +672,25 @@ llama_stack_status llama_stack_complete_stream(llama_stack_engine *engine, const
 
 void llama_stack_string_free(char *s) {
     std::free(s);
+}
+
+llama_stack_status llama_stack_guard_selftest(int32_t kind) {
+    struct not_a_std_exception {
+        int code;
+    };
+    return guard([&]() {
+        switch (kind) {
+        case 1:
+            throw std::runtime_error("guard selftest");
+        case 2:
+            throw std::bad_alloc();
+        case 3:
+            throw not_a_std_exception{3};
+        default:
+            set_error("");
+            return LLAMA_STACK_OK;
+        }
+    });
 }
 
 llama_stack_status llama_stack_grammar_parse(llama_stack_engine *engine, const char *grammar,

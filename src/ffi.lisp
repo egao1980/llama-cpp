@@ -106,6 +106,9 @@ signals LLAMA-NOT-LOADED while libllamastack is still absent."
 (defcfun ("llama_stack_grammar_free" %grammar-free) :void
   (grammar :pointer))
 
+(defcfun ("llama_stack_guard_selftest" %guard-selftest) llama-stack-status
+  (kind :int32))
+
 (defvar *on-token-fn* nil)
 (defvar *on-token-error* nil)
 
@@ -138,6 +141,12 @@ signals LLAMA-NOT-LOADED while libllamastack is still absent."
   "T when the loaded libllamastack exports llama_stack_grammar_parse (ABI 4)."
   (and *llama-loaded*
        (let ((p (ignore-errors (foreign-symbol-pointer "llama_stack_grammar_parse"))))
+         (and p (not (null-pointer-p p))))))
+
+(defun guard-selftest-available-p ()
+  "T when the loaded libllamastack exports llama_stack_guard_selftest."
+  (and *llama-loaded*
+       (let ((p (ignore-errors (foreign-symbol-pointer "llama_stack_guard_selftest"))))
          (and p (not (null-pointer-p p))))))
 
 ;;; Soft auto-load: overlay consumers get the lib; CI without natives still loads.
