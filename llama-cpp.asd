@@ -53,6 +53,7 @@
                (:file "api-test")
                ;; llama-cpp#17: COMPLETE :grammar in a child SBCL (LLAMA_CPP_TEST_MODEL).
                (:file "grammar-test")
+               (:file "grammar-eog-test")
                ;; llama-cpp#18: exit with a live engine (same child SBCL).
                (:file "exit-test"))
   :perform (test-op (o c)
