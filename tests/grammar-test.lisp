@@ -2,7 +2,9 @@
 
 ;;; llama-cpp#17. A C++ exception from llama.cpp's grammar sampler
 ;;; (llama_grammar_accept_token) escapes libllamastack's C ABI: std::terminate,
-;;; abort(), SIGABRT, and SBCL drops into LDB. The completion runs in a child
+;;; abort(), SIGABRT, and SBCL drops into LDB; and llama_sampler_sample already
+;;; accepts the token, so a second llama_sampler_accept fed the grammar every
+;;; piece twice. The completion runs in a child
 ;;; SBCL, so an abort fails these tests instead of killing the test runner.
 ;;;
 ;;; Needs a GGUF in LLAMA_CPP_TEST_MODEL (skipped otherwise; not
@@ -11,8 +13,10 @@
 ;;;   curl -L -o /tmp/stories260K.gguf \
 ;;;     https://huggingface.co/ggml-org/models/resolve/main/tinyllamas/stories260K.gguf
 ;;;   LLAMA_CPP_TEST_MODEL=/tmp/stories260K.gguf cl-repo test
-;;; A checkout has no natives: point LLAMA_CPP_NATIVE at an overlay, e.g.
-;;; ~/.local/share/cl-repository/systems/llama-cpp/0.2.0/native.
+;;; A checkout has no natives: point LLAMA_CPP_NATIVE at lib/<os>-<arch>/ from
+;;; scripts/build-llama.sh (LLAMA_CPP_SKIP_CMAKE=1 relinks only the shim), or at
+;;; an overlay, e.g. ~/.local/share/cl-repository/systems/llama-cpp/0.2.1/native.
+;;; The 0.2.0 overlay aborts in every grammar test below.
 ;;; llama.cpp's own llama-server returns "yes" for the same model, prompt and
 ;;; grammar at temperature 0.
 
@@ -34,52 +38,86 @@
     :ignore-inherited-configuration))
 
 (defun abort-reason (err)
-  (or (find-if (lambda (l) (search "uncaught exception" l))
+  (or (find-if (lambda (l) (or (search "uncaught exception" l) (search "GGML_ASSERT" l)))
                (uiop:split-string err :separator '(#\Newline)))
       (subseq err (max 0 (- (length err) 400)))))
 
 #+sbcl
-(defun complete-in-child (grammar &key (prompt "The cat") (max-tokens 4))
-  "COMPLETE with GRAMMAR on LLAMA_CPP_TEST_MODEL in a fresh SBCL.
-   → (values result exit-code stderr). RESULT is (:ok text),
-   (:llama-error message), or NIL when the child died before printing one."
-  (let* ((load (with-standard-io-syntax
-                 (let ((*print-readably* nil))
-                   (format nil "(progn (asdf:initialize-source-registry '~s) (asdf:load-system \"llama-cpp\"))"
-                           (child-source-registry)))))
-         (run (with-standard-io-syntax
-                (let ((*print-readably* nil))
-                  (format nil "(let ((e (llama-cpp:load-engine :model-path ~s :n-ctx 256))) (format t \"~~&RESULT ~~s~~%\" (handler-case (list :ok (llama-cpp:complete e ~s :max-tokens ~d :grammar ~s)) (llama-cpp:llama-error (c) (list :llama-error (princ-to-string c))))) (finish-output) (llama-cpp:free-engine e))"
-                          (namestring (model-path)) prompt max-tokens grammar)))))
+(defun run-child-sbcl (&rest evals)
+  "Load this llama-cpp in a fresh SBCL (--non-interactive, no LDB), then
+   evaluate each of EVALS (source text) in turn. → (values stdout stderr code)."
+  (let ((load (with-standard-io-syntax
+                  (let ((*print-readably* nil))
+                    (format nil "(progn (asdf:initialize-source-registry '~s) (asdf:load-system \"llama-cpp\"))"
+                            (child-source-registry))))))
     (multiple-value-bind (out err code)
-        (uiop:run-program (list (namestring sb-ext:*runtime-pathname*)
-                                "--core" (namestring sb-ext:*core-pathname*)
-                                "--noinform" "--disable-ldb" "--lose-on-corruption"
-                                "--end-runtime-options"
-                                "--no-sysinit" "--no-userinit" "--non-interactive"
-                                "--eval" "(require :asdf)"
-                                "--eval" load
-                                "--eval" run)
+        (uiop:run-program (append
+                           (list (namestring sb-ext:*runtime-pathname*)
+                                 "--core" (namestring sb-ext:*core-pathname*)
+                                 "--noinform" "--disable-ldb" "--lose-on-corruption"
+                                 "--end-runtime-options"
+                                 "--no-sysinit" "--no-userinit" "--non-interactive"
+                                 "--eval" "(require :asdf)"
+                                 "--eval" load)
+                           (loop for e in evals append (list "--eval" e)))
                           :input nil :output :string :error-output :string
                           :ignore-error-status t)
-      (let ((line (find-if (lambda (l) (uiop:string-prefix-p "RESULT " l))
-                           (uiop:split-string out :separator '(#\Newline)))))
-        (values (and line
-                     (with-standard-io-syntax
-                       (let ((*read-eval* nil))
-                         (read-from-string line t nil :start 7))))
-                code
-                err)))))
+      (values out err code))))
 
-(defmacro with-grammar-child ((result code err) &body body)
+#+sbcl
+(defun run-in-child (call)
+  "Evaluate CALL (Lisp source text; E is an engine on LLAMA_CPP_TEST_MODEL)
+   in a fresh SBCL. → (values result exit-code stderr). RESULT is (:ok value),
+   (:llama-error message), or NIL when the child died before printing one."
+  (multiple-value-bind (out err code)
+      (run-child-sbcl
+       (with-standard-io-syntax
+           (let ((*print-readably* nil))
+             (format nil "(let ((e (llama-cpp:load-engine :model-path ~s :n-ctx 256))) (let ((*print-pretty* nil)) (format t \"~~&RESULT ~~s~~%\" (handler-case (list :ok ~a) (llama-cpp:llama-error (c) (list :llama-error (princ-to-string c)))))) (finish-output) (llama-cpp:free-engine e))"
+                     (namestring (model-path)) call))))
+    ;; Read from the marker, not one line: a printed string may hold newlines.
+    (let ((start (search (format nil "~%RESULT ") (format nil "~%~a" out))))
+      (values (and start
+                   (with-standard-io-syntax
+                       (let ((*read-eval* nil))
+                         (ignore-errors
+                           (read-from-string out t nil :start (+ start 7))))))
+              code
+              err))))
+
+#+sbcl
+(defun complete-in-child (grammar &key (prompt "The cat") (max-tokens 4)
+                                  (temperature 0.0) (mode :grammar))
+  "COMPLETE with GRAMMAR on LLAMA_CPP_TEST_MODEL in a fresh SBCL (RUN-IN-CHILD).
+   MODE :grammar → (:ok text). :parsed parses GRAMMAR once and completes twice
+   with the handle → (:ok (text1 text2)). :stream adds :on-token →
+   (:ok (text pieces-joined))."
+  (run-in-child
+   (with-standard-io-syntax
+       (let ((*print-readably* nil))
+         (ecase mode
+           (:grammar
+            (format nil "(llama-cpp:complete e ~s :max-tokens ~d :temperature ~f :grammar ~s)"
+                    prompt max-tokens temperature grammar))
+           (:parsed
+            (format nil "(let ((g (llama-cpp:parse-grammar e ~s))) (prog1 (list (llama-cpp:complete e ~s :max-tokens ~d :temperature ~f :parsed g) (llama-cpp:complete e ~s :max-tokens ~d :temperature ~f :parsed g)) (llama-cpp:free-grammar g)))"
+                    grammar prompt max-tokens temperature prompt max-tokens temperature))
+           (:stream
+            (format nil "(let ((pieces '())) (let ((text (llama-cpp:complete e ~s :max-tokens ~d :temperature ~f :grammar ~s :on-token (lambda (p) (push p pieces) nil)))) (list text (apply #'concatenate 'string (reverse pieces)))))"
+                    prompt max-tokens temperature grammar)))))))
+
+(defmacro with-grammar-child (((result code err) &rest complete-args) &body body)
+  "Run COMPLETE-IN-CHILD with COMPLETE-ARGS (default: *YES-NO-GRAMMAR*) and
+   bind its values, or skip when there is no library, model or SBCL."
   `(cond
-     ((not (llama-cpp:llama-available-p)) (skip "libllamastack not present"))
-     ((not (llama-cpp:complete-ex-available-p)) (skip "libllamastack ABI < 2 (no grammar)"))
-     ((not (model-path)) (skip "set LLAMA_CPP_TEST_MODEL to a GGUF (see tests/grammar-test.lisp)"))
-     #-sbcl (t (skip "child-image test is SBCL-only"))
-     #+sbcl
-     (t (multiple-value-bind (,result ,code ,err) (complete-in-child *yes-no-grammar*)
-          ,@body))))
+    ((not (llama-cpp:llama-available-p)) (skip "libllamastack not present"))
+    ((not (llama-cpp:complete-ex-available-p)) (skip "libllamastack ABI < 2 (no grammar)"))
+    ((not (model-path)) (skip "set LLAMA_CPP_TEST_MODEL to a GGUF (see tests/grammar-test.lisp)"))
+    #-sbcl (t (skip "child-image test is SBCL-only"))
+    #+sbcl
+    (t (multiple-value-bind (,result ,code ,err)
+           (complete-in-child ,@(or complete-args '(*yes-no-grammar*)))
+         ,@body))))
 
 (deftest child-completes-without-grammar
   ;; Control: the same child, model and prompt without :grammar return text,
@@ -97,15 +135,74 @@
 (deftest grammar-complete-does-not-abort-the-image
   ;; Fix 1: catch at the ABI boundary. A C++ exception becomes a status code
   ;; and a LLAMA-ERROR, never an abort.
-  (with-grammar-child (result code err)
+  (with-grammar-child ((result code err))
     (ok (and result (member (first result) '(:ok :llama-error)))
         (format nil "child exited ~a without a result: ~a" code (abort-reason err)))))
 
 (deftest grammar-complete-returns-a-sentence-of-the-grammar
   ;; Fix 2: once the grammar is complete, generation stops (EOS), so the text
   ;; is a sentence of root ::= ("yes" | "no").
-  (with-grammar-child (result code err)
+  (with-grammar-child ((result code err))
     (ok (and (eq (first result) :ok)
              (member (second result) '("yes" "no") :test #'string=))
         (format nil "want (:ok \"yes\"|\"no\"), got ~s (child exit ~a~@[: ~a~])"
                 result code (and (null result) (abort-reason err))))))
+
+(defun yes-or-no-p* (text)
+  (and (stringp text) (member text '("yes" "no") :test #'string=)))
+
+(defun describe-child (result code err)
+  (format nil "got ~s (child exit ~a~@[: ~a~])"
+          result code (and (null result) (abort-reason err))))
+
+(deftest grammar-exception-becomes-llama-error
+  ;; Fix 1 on its own. No token's piece can start with NUL, so the grammar
+  ;; sampler rules out every candidate, greedy picks one anyway and accepting
+  ;; it throws std::runtime_error. libllamastack 0.2.0 aborts the image here
+  ;; (even without the double accept); now it is a LLAMA-ERROR :RUNTIME.
+  (with-grammar-child ((result code err) "root ::= \"\\x00\"")
+    (ok (and (eq (first result) :llama-error)
+             (search "C++ exception" (second result))
+             (search "RUNTIME" (second result)))
+        (describe-child result code err))))
+
+(deftest bad-gbnf-is-llama-error
+  ;; An undefined rule: llama_sampler_init_grammar returns NULL → :INVALID.
+  (with-grammar-child ((result code err) "root ::= \"a\" | missing-rule")
+    (ok (and (eq (first result) :llama-error)
+             (search "grammar parse failed" (second result)))
+        (describe-child result code err))))
+
+(deftest parsed-grammar-is-reusable
+  ;; PARSE-GRAMMAR once, COMPLETE :parsed twice: each call clones the sampler,
+  ;; so the second completion starts from the grammar's root again.
+  (with-grammar-child ((result code err) *yes-no-grammar* :mode :parsed)
+    (ok (and (eq (first result) :ok)
+             (every #'yes-or-no-p* (second result)))
+        (describe-child result code err))))
+
+(deftest streamed-grammar-pieces-join-to-the-text
+  ;; :on-token (llama_stack_complete_stream) takes the same sampler path.
+  (with-grammar-child ((result code err) *yes-no-grammar* :mode :stream)
+    (ok (and (eq (first result) :ok)
+             (yes-or-no-p* (first (second result)))
+             (equal (first (second result)) (second (second result))))
+        (describe-child result code err))))
+
+(deftest sampled-grammar-complete-is-a-sentence
+  ;; Temperature > 0 (temp + dist after the grammar) also ends at the grammar.
+  (with-grammar-child ((result code err) *yes-no-grammar* :temperature 0.8)
+    (ok (and (eq (first result) :ok) (yes-or-no-p* (second result)))
+        (describe-child result code err))))
+
+(deftest grammar-stops-at-max-tokens
+  ;; An open-ended grammar is cut at :max-tokens: a prefix of a sentence,
+  ;; not an error.
+  (with-grammar-child ((result code err) "root ::= \"{\" [a-z]+ \"}\"" :max-tokens 3)
+    (let ((text (and (eq (first result) :ok) (second result))))
+      (ok (and (stringp text)
+               (plusp (length text))
+               (char= #\{ (char text 0))
+               (every (lambda (ch) (or (char<= #\a ch #\z) (char= ch #\})))
+                      (subseq text 1)))
+          (describe-child result code err)))))

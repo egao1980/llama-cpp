@@ -8,7 +8,7 @@ Lisp binds **`include/llama-stack.h`** (`libllamastack`), a small stable ABI. `l
 |---|---|
 | `linux/amd64` | **CUDA + Vulkan** (`-DGGML_CUDA=ON -DGGML_VULKAN=ON`, archs `80;86;89;90a`) |
 | `linux/arm64` | CPU |
-| `darwin/arm64` | Metal + Accelerate BLAS. One dylib per library (`@rpath` / `@loader_path`); no `lib*.0.dylib` twin. |
+| `darwin/arm64` | Metal + Accelerate BLAS. One dylib per library (`@rpath` / `@loader_path`); no `lib*.<SONAME>.dylib` twin. |
 | `windows/amd64` | **CUDA + Vulkan** |
 
 `arrange-native-artifacts` keys **os-arch only**, so the published linux/amd64 and windows/amd64 overlays **are** the GPU builds. CPU (or cuda-only / vulkan-only) on those pairs is local: `LLAMA_CPP_FLAVOR=cpu|cuda|vulkan` → `lib/<os>-<arch>-<flavor>/`.
@@ -39,6 +39,12 @@ SBCL masks float traps around FFI — ggml/Metal/CUDA inexact/denormals otherwis
 ```
 
 `embed` is the GGUF path that matches LM Studio (llama.cpp archs: `bert`, `qwen3`, …). `complete` is greedy / temperature sampling. Optional `:grammar` / `:grammar-root` (GBNF, ABI 2 `llama_stack_complete_ex`) goes first on the sampler chain. `parse-grammar` (ABI 4) compiles GBNF once via `llama_sampler_init_grammar`; pass the handle as `:parsed` — complete clones it. `:on-token` (ABI 3 `llama_stack_complete_stream`) is called with each detok delta; a non-NIL return stops. `n-gpu-layers` -1 = all (CUDA or Vulkan device, whichever ggml picks).
+
+Grammar-constrained `complete` ends when the grammar is complete (llama.cpp only allows end-of-generation then), so the text is a sentence of the grammar unless `:max-tokens` cuts it short. `libllamastack` is C++ behind the C ABI: a C++ exception from llama.cpp (the grammar sampler throws `std::runtime_error`) becomes status `:runtime` and a `llama-error` that carries it (`C++ exception: …`), never an abort of the Lisp image.
+
+Free engines with `free-engine` (grammars with `free-grammar`). A finalizer frees an engine that becomes garbage, and `free-live-handles` frees whatever is still live, grammars first; it runs from `sb-ext:*exit-hooks*` (CCL: `*lisp-cleanup-functions*`) and before an image dump, so exiting with an engine in a global ends with the exit code, not a Metal `GGML_ASSERT` in C `atexit`.
+
+Tests with a model: `LLAMA_CPP_TEST_MODEL=/path/stories260K.gguf LLAMA_CPP_NATIVE=$PWD/lib/<os>-<arch> cl-repo test` (the grammar and exit tests run in a child SBCL; without the variable they skip).
 
 llm-protocol lives in [`llm-backend-llama-cpp`](https://github.com/egao1980/llm-backend-llama-cpp).
 

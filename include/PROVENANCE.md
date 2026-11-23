@@ -1,6 +1,6 @@
 # include/llama-stack.h
 
-Our ABI (`LLAMA_STACK_ABI_VERSION`). Implemented in `native/llama-stack.c`
+Our ABI (`LLAMA_STACK_ABI_VERSION`). Implemented in `native/llama-stack.cpp`
 against [`ggml-org/llama.cpp`](https://github.com/ggml-org/llama.cpp) `llama.h`.
 
 | Field | Value |

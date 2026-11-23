@@ -149,21 +149,22 @@ done < <(find "$BUILD" \( -type f -o -type l \) \( \
     -o -name 'ggml-metal.metallib' \
   \) -print0)
 
+# The shim is C++ so it can catch llama.cpp exceptions at the C ABI (llama-cpp#17).
 SHIM_OUT="$OUT/libllamastack"
 if [[ "$os" == "darwin" ]]; then
   SHIM_OUT="${SHIM_OUT}.dylib"
-  cc -dynamiclib -fPIC -DLLAMA_STACK_BUILD \
+  c++ -std=c++17 -O2 -dynamiclib -fPIC -DLLAMA_STACK_BUILD \
     -I"$ROOT/include" -I"$SRC/include" -I"$SRC/ggml/include" \
-    "$ROOT/native/llama-stack.c" \
+    "$ROOT/native/llama-stack.cpp" \
     -L"$OUT" -lllama -lggml \
     -install_name @rpath/libllamastack.dylib \
     -Wl,-rpath,@loader_path \
     -o "$SHIM_OUT"
 else
   SHIM_OUT="${SHIM_OUT}.so"
-  cc -shared -fPIC -DLLAMA_STACK_BUILD \
+  c++ -std=c++17 -O2 -shared -fPIC -DLLAMA_STACK_BUILD \
     -I"$ROOT/include" -I"$SRC/include" -I"$SRC/ggml/include" \
-    "$ROOT/native/llama-stack.c" \
+    "$ROOT/native/llama-stack.cpp" \
     -L"$OUT" -lllama -lggml -lm \
     -Wl,-soname,libllamastack.so.0 \
     -Wl,-rpath,'$ORIGIN' \
@@ -199,8 +200,8 @@ drop_ggml_patch_versions() {
   done
 }
 
-# cmake writes libggml-base.dylib -> libggml-base.0.dylib as two inodes
-# after materialize_symlinks, both with LC_ID_DYLIB @rpath/libggml-base.0.dylib,
+# cmake writes libggml-base.dylib -> libggml-base.<SONAME>.dylib (0, now 1) as two inodes
+# after materialize_symlinks, both with LC_ID_DYLIB @rpath/libggml-base.<SONAME>.dylib,
 # and an absolute build-tree LC_RPATH. cl-repo-init dlopens every file; a
 # later load-shared-object of the same pathname dlcloses first. macOS 26
 # re-runs the image initializer and GGML_ASSERT(prev != ggml_uncaught_exception)
@@ -213,7 +214,7 @@ darwin_collapse_dylibs() {
   for f in "$out"/*.dylib; do
     [[ -f "$f" && ! -L "$f" ]] || continue
     id="$(otool -D "$f" | awk 'NR==2 {print}')"
-    if [[ "$id" =~ ^@rpath/(.+)\.0\.dylib$ ]]; then
+    if [[ "$id" =~ ^@rpath/(.+)\.[0-9]+\.dylib$ ]]; then
       pairs+=("${id}|@rpath/${BASH_REMATCH[1]}.dylib")
     fi
   done
@@ -224,7 +225,7 @@ darwin_collapse_dylibs() {
       newid="${pair#*|}"
       for f in "$out"/*.dylib; do
         [[ -f "$f" && ! -L "$f" ]] || continue
-        [[ "$(basename "$f")" == *.0.dylib ]] && continue
+        [[ "$(basename "$f")" =~ \.[0-9]+\.dylib$ ]] && continue
         cur="$(otool -D "$f" | awk 'NR==2 {print}')"
         if [[ "$cur" == "$id" ]]; then
           install_name_tool -id "$newid" "$f"
@@ -237,7 +238,7 @@ darwin_collapse_dylibs() {
   fi
   for f in "$out"/*.dylib; do
     [[ -f "$f" && ! -L "$f" ]] || continue
-    [[ "$(basename "$f")" == *.0.dylib ]] && continue
+    [[ "$(basename "$f")" =~ \.[0-9]+\.dylib$ ]] && continue
     while IFS= read -r rp; do
       [[ -n "$rp" ]] || continue
       install_name_tool -delete_rpath "$rp" "$f"
@@ -245,7 +246,9 @@ darwin_collapse_dylibs() {
     install_name_tool -add_rpath @loader_path "$f"
     codesign -s - -f "$f" >/dev/null
   done
-  rm -f "$out"/*.0.dylib
+  for f in "$out"/*.dylib; do
+    if [[ "$(basename "$f")" =~ \.[0-9]+\.dylib$ ]]; then rm -f "$f"; fi
+  done
   shopt -u nullglob
 }
 

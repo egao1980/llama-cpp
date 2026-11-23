@@ -1,5 +1,6 @@
 /* Stable C ABI for the llama-cpp Lisp binding.
- * Implementation lives in native/llama-stack.c against ggml-org/llama.cpp.
+ * Implementation lives in native/llama-stack.cpp against ggml-org/llama.cpp.
+ * No C++ exception crosses this ABI: each function returns a status instead.
  * Do not bind llama.h structs from Lisp — they churn. */
 #ifndef LLAMA_STACK_H
 #define LLAMA_STACK_H

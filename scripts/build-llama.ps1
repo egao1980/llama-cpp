@@ -157,12 +157,13 @@ if (-not (Test-Path (Join-Path $Out "llama.lib"))) {
 
 $includeLlama = Join-Path $Src "include"
 $includeGgml = Join-Path $Src "ggml\include"
-$shimC = Join-Path $Root "native\llama-stack.c"
+$shimC = Join-Path $Root "native\llama-stack.cpp"
 $shimDll = Join-Path $Out "llamastack.dll"
 Write-Host "==> cl llamastack.dll"
 Push-Location $Out
 try {
-    & cl /nologo /O2 /LD /DLLAMA_STACK_BUILD `
+    # C++ with /EHsc: the shim catches llama.cpp exceptions at the C ABI (llama-cpp#17).
+    & cl /nologo /O2 /LD /EHsc /std:c++17 /DLLAMA_STACK_BUILD `
         /I"$($Root)\include" /I$includeLlama /I$includeGgml `
         $shimC `
         /Fe:llamastack.dll `

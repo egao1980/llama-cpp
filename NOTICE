@@ -1,6 +1,6 @@
 llama-cpp (MIT) binds ggml-org/llama.cpp (MIT) via libllamastack.
 
-include/llama-stack.h is our ABI, implemented in native/llama-stack.c.
+include/llama-stack.h is our ABI, implemented in native/llama-stack.cpp.
 Overlay libllama / libggml*: MIT.
 https://github.com/ggml-org/llama.cpp/blob/master/LICENSE
 

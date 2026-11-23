@@ -1,5 +1,5 @@
 (defsystem "llama-cpp"
-  :version "0.2.0"
+  :version "0.2.1"
   :description "CFFI + native overlays for ggml-org/llama.cpp (linux/amd64 and windows/amd64 are CUDA+Vulkan)"
   :author "egao1980"
   :license "MIT"
@@ -52,7 +52,9 @@
   :components ((:file "package")
                (:file "api-test")
                ;; llama-cpp#17: COMPLETE :grammar in a child SBCL (LLAMA_CPP_TEST_MODEL).
-               (:file "grammar-test"))
+               (:file "grammar-test")
+               ;; llama-cpp#18: exit with a live engine (same child SBCL).
+               (:file "exit-test"))
   :perform (test-op (o c)
              (unless (symbol-call :rove :run c)
                (error "tests failed for ~A" (component-name c)))))
