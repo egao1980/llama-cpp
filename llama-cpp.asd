@@ -50,7 +50,9 @@
   :pathname "tests"
   :serial t
   :components ((:file "package")
-               (:file "api-test"))
+               (:file "api-test")
+               ;; llama-cpp#17: COMPLETE :grammar in a child SBCL (LLAMA_CPP_TEST_MODEL).
+               (:file "grammar-test"))
   :perform (test-op (o c)
              (unless (symbol-call :rove :run c)
                (error "tests failed for ~A" (component-name c)))))
