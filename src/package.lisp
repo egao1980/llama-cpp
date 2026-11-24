@@ -31,6 +31,7 @@
            #:llama-grammar-p
            #:parse-grammar
            #:free-grammar
-           #:embed))
+           #:embed
+           #:free-live-handles))
 
 (in-package #:llama-cpp)

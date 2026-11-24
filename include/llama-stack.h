@@ -1,5 +1,6 @@
 /* Stable C ABI for the llama-cpp Lisp binding.
- * Implementation lives in native/llama-stack.c against ggml-org/llama.cpp.
+ * Implementation lives in native/llama-stack.cpp against ggml-org/llama.cpp.
+ * No C++ exception crosses this ABI: each function returns a status instead.
  * Do not bind llama.h structs from Lisp — they churn. */
 #ifndef LLAMA_STACK_H
 #define LLAMA_STACK_H
@@ -105,6 +106,13 @@ LLAMA_STACK_API llama_stack_status llama_stack_complete_stream(
     int32_t *prompt_tokens,
     int32_t *completion_tokens);
 LLAMA_STACK_API void llama_stack_string_free(char *s);
+
+/* Diagnostics: throw a C++ exception inside the ABI guard. KIND 1 =
+ * std::runtime_error, 2 = std::bad_alloc, 3 = a non-std exception, anything
+ * else throws nothing (LLAMA_STACK_OK). An exception becomes
+ * LLAMA_STACK_RUNTIME and llama_stack_last_error(), as in every export; tests
+ * use this to check the guard of the library they load (llama-cpp#17). */
+LLAMA_STACK_API llama_stack_status llama_stack_guard_selftest(int32_t kind);
 
 #ifdef __cplusplus
 }

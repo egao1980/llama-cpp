@@ -29,6 +29,29 @@
     #-sbcl progn
     ,@body))
 
+(defvar *live-pointers*
+  (make-hash-table :test 'eql #+sbcl :synchronized #+sbcl t)
+  "Address → (kind . weak pointer to the Lisp handle) for every native engine
+   (:engine) and grammar (:grammar) not yet freed.")
+
+(defun %track-native (kind pointer handle)
+  "Record POINTER (KIND :engine or :grammar) as live, owned by HANDLE."
+  (setf (gethash (pointer-address pointer) *live-pointers*)
+        (cons kind (tg:make-weak-pointer handle)))
+  handle)
+
+(defun %release-native (kind pointer)
+  "Free POINTER once. Only the caller whose REMHASH removes its address frees
+   it, so FREE-*, a finalizer and FREE-LIVE-HANDLES never double-free.
+   → T when this call freed it."
+  (when (and pointer (not (null-pointer-p pointer))
+             (remhash (pointer-address pointer) *live-pointers*))
+    (%with-foreign-floats
+      (ecase kind
+        (:engine (%free pointer))
+        (:grammar (%grammar-free pointer))))
+    t))
+
 (defclass llama-engine ()
   ((pointer :initarg :pointer :accessor engine-pointer)
    (model-path :initarg :model-path :accessor engine-model-path)
@@ -39,18 +62,16 @@
 
 (defun free-engine (engine)
   (when (and engine (not (engine-freed-p engine)))
-    (let ((p (engine-pointer engine)))
-      (when (and p (not (null-pointer-p p)))
-        (%with-foreign-floats (%free p))))
+    (tg:cancel-finalization engine)
+    (%release-native :engine (engine-pointer engine))
     (setf (engine-pointer engine) (null-pointer)
           (engine-freed-p engine) t))
   engine)
 
-(defun %finalize-engine (engine)
-  (ignore-errors (free-engine engine)))
-
 (defun load-engine (&key model-path (n-ctx 2048) (n-gpu-layers -1) n-threads)
-  "Load a GGUF. N-CTX keeps KV/embed batch small. N-GPU-LAYERS -1 = all."
+  "Load a GGUF. N-CTX keeps KV/embed batch small. N-GPU-LAYERS -1 = all.
+   FREE-ENGINE frees it; otherwise a finalizer does once the engine is
+   garbage, and FREE-LIVE-HANDLES does when the image exits."
   (ensure-llama)
   (let ((path (or model-path (%env "LLAMA_MODEL_PATH") (%env "LLAMA_CPP_MODEL"))))
     (unless (and path (plusp (length path)))
@@ -73,7 +94,9 @@
                (engine (make-instance 'llama-engine
                                       :pointer ptr
                                       :model-path path)))
-          (tg:finalize engine (lambda () (%finalize-engine engine)))
+          (%track-native :engine ptr engine)
+          ;; The finalizer must not close over ENGINE, or ENGINE is never garbage.
+          (tg:finalize engine (lambda () (%release-native :engine ptr)))
           engine)))))
 
 (defun ensure-engine (engine)
@@ -139,15 +162,11 @@
 
 (defun free-grammar (grammar)
   (when (and grammar (not (grammar-freed-p grammar)))
-    (let ((p (grammar-pointer grammar)))
-      (when (and p (not (null-pointer-p p)))
-        (%with-foreign-floats (%grammar-free p))))
+    (tg:cancel-finalization grammar)
+    (%release-native :grammar (grammar-pointer grammar))
     (setf (grammar-pointer grammar) (null-pointer)
           (grammar-freed-p grammar) t))
   grammar)
-
-(defun %finalize-grammar (grammar)
-  (ignore-errors (free-grammar grammar)))
 
 (defun parse-grammar (engine grammar &key (root "root"))
   "Compile GBNF via llama_sampler_init_grammar. ENGINE must outlive the handle.
@@ -165,7 +184,8 @@
                 "llama_stack_grammar_parse"))
       (let* ((ptr (mem-ref out :pointer))
              (g (make-instance 'llama-grammar :pointer ptr)))
-        (tg:finalize g (lambda () (%finalize-grammar g)))
+        (%track-native :grammar ptr g)
+        (tg:finalize g (lambda () (%release-native :grammar ptr)))
         g))))
 
 (defun %with-complete-params (max-tokens temperature grammar grammar-root parsed fn)
@@ -259,3 +279,41 @@
                      (mem-ref ct :int32))
           (unless (or (null ptr) (null-pointer-p ptr))
             (%string-free ptr)))))))
+
+(defun free-live-handles ()
+  "Free every engine and grammar not yet freed: grammars first, then engines.
+   Their Lisp handles read as freed afterwards. Runs on exit (SBCL
+   SB-EXT:*EXIT-HOOKS*, CCL *LISP-CLEANUP-FUNCTIONS*) and before an image dump,
+   so C atexit never destroys ggml's statics under a live model
+   (llama-cpp#18). → the number of handles freed."
+  (let ((grammars '())
+        (engines '()))
+    (maphash (lambda (address entry)
+               (if (eq (car entry) :grammar)
+                   (push (cons address (cdr entry)) grammars)
+                   (push (cons address (cdr entry)) engines)))
+             *live-pointers*)
+    (flet ((release (kind items)
+             (loop for (address . weak) in items
+                   for handle = (tg:weak-pointer-value weak)
+                   when (%release-native kind (make-pointer address))
+                     count t
+                   when handle
+                     do (tg:cancel-finalization handle)
+                        (if (eq kind :grammar)
+                            (setf (grammar-pointer handle) (null-pointer)
+                                  (grammar-freed-p handle) t)
+                            (setf (engine-pointer handle) (null-pointer)
+                                  (engine-freed-p handle) t)))))
+      (+ (release :grammar grammars)
+         (release :engine engines)))))
+
+(defun %free-live-handles-hook ()
+  (ignore-errors (free-live-handles)))
+
+(progn
+  ;; Exit: free native handles before C atexit tears ggml/Metal down (#18).
+  #+sbcl (pushnew '%free-live-handles-hook sb-ext:*exit-hooks*)
+  #+ccl (pushnew '%free-live-handles-hook ccl::*lisp-cleanup-functions*))
+
+(uiop:register-image-dump-hook '%free-live-handles-hook)

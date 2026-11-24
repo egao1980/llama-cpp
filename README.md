@@ -8,7 +8,7 @@ Lisp binds **`include/llama-stack.h`** (`libllamastack`), a small stable ABI. `l
 |---|---|
 | `linux/amd64` | **CUDA + Vulkan** (`-DGGML_CUDA=ON -DGGML_VULKAN=ON`, archs `80;86;89;90a`) |
 | `linux/arm64` | CPU |
-| `darwin/arm64` | Metal + Accelerate BLAS. One dylib per library (`@rpath` / `@loader_path`); no `lib*.0.dylib` twin. |
+| `darwin/arm64` | Metal + Accelerate BLAS. One dylib per library (`@rpath` / `@loader_path`); no `lib*.<SONAME>.dylib` twin. |
 | `windows/amd64` | **CUDA + Vulkan** |
 
 `arrange-native-artifacts` keys **os-arch only**, so the published linux/amd64 and windows/amd64 overlays **are** the GPU builds. CPU (or cuda-only / vulkan-only) on those pairs is local: `LLAMA_CPP_FLAVOR=cpu|cuda|vulkan` → `lib/<os>-<arch>-<flavor>/`.
@@ -39,6 +39,12 @@ SBCL masks float traps around FFI — ggml/Metal/CUDA inexact/denormals otherwis
 ```
 
 `embed` is the GGUF path that matches LM Studio (llama.cpp archs: `bert`, `qwen3`, …). `complete` is greedy / temperature sampling. Optional `:grammar` / `:grammar-root` (GBNF, ABI 2 `llama_stack_complete_ex`) goes first on the sampler chain. `parse-grammar` (ABI 4) compiles GBNF once via `llama_sampler_init_grammar`; pass the handle as `:parsed` — complete clones it. `:on-token` (ABI 3 `llama_stack_complete_stream`) is called with each detok delta; a non-NIL return stops. `n-gpu-layers` -1 = all (CUDA or Vulkan device, whichever ggml picks).
+
+Grammar-constrained `complete` ends when the grammar is complete (llama.cpp only allows end-of-generation then), so the text is a sentence of the grammar unless `:max-tokens` cuts it short. The shim applies the grammar itself and drops the tokens it rules out before greedy / temp+dist picks, so the pick is always a token the grammar accepts. When the grammar rules out every token (a dead end) `complete` signals `llama-error` `:runtime` (`grammar dead end: ...`) instead of picking one anyway: llama.cpp would then throw, or `GGML_ABORT` the process when that token is end-of-generation. A grammar cannot name an end-of-generation token (`<|im_end|>`, `</s>`, `<[2]>`): llama.cpp masks those until the grammar is complete, so such a grammar always ends in that dead end; end the grammar where the text ends. `libllamastack` is C++ behind the C ABI: a C++ exception from llama.cpp becomes status `:runtime` and a `llama-error` that carries it (`C++ exception: …`), never an abort of the Lisp image; `llama_stack_guard_selftest` throws one on purpose so tests check the guard of the library they load.
+
+Free engines with `free-engine` (grammars with `free-grammar`). A finalizer frees an engine that becomes garbage, and `free-live-handles` frees whatever is still live, grammars first; it runs from `sb-ext:*exit-hooks*` (CCL: `ccl::*lisp-cleanup-functions*`) and before an image dump, so exiting with an engine in a global ends with the exit code, not a Metal `GGML_ASSERT` in C `atexit`.
+
+Tests with a model: `LLAMA_CPP_TEST_MODEL=/path/stories260K.gguf LLAMA_CPP_NATIVE=$PWD/lib/<os>-<arch> cl-repo test` (the grammar and exit tests run in a child SBCL; without the variable they skip). `LLAMA_CPP_TEST_CHAT_MODEL` adds the tests on a vocabulary whose token 0 is end-of-generation, e.g. SmolLM2-135M-Instruct-Q4_0.gguf (see `tests/grammar-eog-test.lisp`).
 
 llm-protocol lives in [`llm-backend-llama-cpp`](https://github.com/egao1980/llm-backend-llama-cpp).
 
