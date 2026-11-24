@@ -162,8 +162,10 @@ $shimDll = Join-Path $Out "llamastack.dll"
 Write-Host "==> cl llamastack.dll"
 Push-Location $Out
 try {
-    # C++ with /EHsc: the shim catches llama.cpp exceptions at the C ABI (llama-cpp#17).
-    & cl /nologo /O2 /LD /EHsc /std:c++17 /DLLAMA_STACK_BUILD `
+    # C++ with /EHs: the shim catches llama.cpp exceptions at the C ABI (llama-cpp#17).
+    # Not /EHsc: its "c" lets MSVC assume extern "C" functions (every llama_* call)
+    # never throw, so the guard could miss an exception from llama.dll (#25).
+    & cl /nologo /O2 /LD /EHs /std:c++17 /DLLAMA_STACK_BUILD `
         /I"$($Root)\include" /I$includeLlama /I$includeGgml `
         $shimC `
         /Fe:llamastack.dll `
